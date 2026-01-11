@@ -56,8 +56,8 @@ Click the badge above to open the notebook directly in Google Colab. You will ne
 
 1. **Clone the repository**
 ```bash
-   git clone [https://github.com/ishan-1010/CognitionFlow.git](https://github.com/ishan-1010/CognitionFlow.git)
-   cd CognitionFlow
+git clone [https://github.com/ishan-1010/CognitionFlow.git](https://github.com/ishan-1010/CognitionFlow.git)
+cd CognitionFlow
 ```
 
 2. **Install dependencies**
