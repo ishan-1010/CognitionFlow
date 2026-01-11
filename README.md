@@ -1,5 +1,6 @@
 CognitionFlow: Agentic Systems Lab
 ===================
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ishan-1010/CognitionFlow/blob/main/CognitionFlow.ipynb)
 
 **CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems with persistent vector memory**.The project demonstrates how multiple AI agents can collaborate, retain context over time, and generate analytical artifacts through structured orchestration rather than single-prompt interactions.
 
