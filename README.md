@@ -1,170 +1,119 @@
-CognitionFlow: Agentic Systems Lab
-===================
+# CognitionFlow: Agentic Systems Lab
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ishan-1010/CognitionFlow/blob/main/CognitionFlow.ipynb)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![AI Framework](https://img.shields.io/badge/Framework-Microsoft_AutoGen-blueviolet)
 
-**CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems with persistent vector memory**.The project demonstrates how multiple AI agents can collaborate, retain context over time, and generate analytical artifacts through structured orchestration rather than single-prompt interactions.
+**CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems** with persistent vector memory. The project demonstrates how multiple AI agents can collaborate, retain context over time, and generate analytical artifacts through structured orchestration rather than single-prompt interactions.
 
-This repository is intended as a **systems-level prototype**, focusing on architecture, reasoning flow, and agent coordination rather than production deployment.
+This repository serves as a **systems-level prototype**, focusing on architecture, reasoning flow, and agent coordination using **Microsoft AutoGen**.
 
-Project Overview
-----------------
+---
 
-Modern LLM applications often rely on single-agent prompt chains, which limits scalability, memory, and collaborative reasoning.This project investigates an alternative approach using **agent orchestration**, where:
+## Generated Artifacts & Analysis
+Unlike standard chatbots, this system generates tangible outputs. Below is an example of the system health analysis generated autonomously by the *Analyst Agent* after interpreting synthetic log data:
 
-*   Distinct agents assume specialized roles
-    
-*   Long-term memory is stored and retrieved using vector embeddings
-    
-*   Agents collaborate to simulate problem-solving workflows
-    
-*   Outputs include both reasoning traces and generated artifacts (e.g., visualizations)
-    
+![System Health Plot](server_health.png)
+*(Figure: Multi-agent generated analysis of system metrics)*
 
-The implementation is demonstrated through an interactive Jupyter notebook.
+---
 
-Key Features
-------------
+## Project Overview
 
-*   **Multi-Agent Architecture**
-    
-    *   Agents are assigned explicit roles (e.g., coordinator, executor, analyst)
-        
-    *   Agent interactions are orchestrated using an agent framework
-        
-*   **Persistent Vector Memory**
-    
-    *   Long-term memory implemented via a vector database
-        
-    *   Embeddings generated using a lightweight sentence-transformer model
-        
-    *   Enables contextual recall across different phases of execution
-        
-*   **Simulation & Analysis**
-    
-    *   Synthetic system data is generated and analyzed by agents
-        
-    *   Results are visualized and saved as artifacts (e.g., system health plots)
-        
-*   **Demonstration-Focused Design**
-    
-    *   Notebook-based execution for clarity and explainability
-        
-    *   Emphasis on architecture and behavior rather than UI polish
-        
+Modern LLM applications often rely on single-agent prompt chains, which limit scalability and collaborative reasoning. This project investigates an **agent orchestration** approach where:
 
-Architecture (High-Level)
--------------------------
+* **Distinct Roles:** Agents assume specialized personas (e.g., *Coordinator, Executor, Analyst*).
+* **Vector Memory:** Long-term context is stored and retrieved using vector embeddings.
+* **Autonomous Loops:** Agents collaborate to simulate problem-solving workflows without human intervention.
+* **Artifact Generation:** Outputs include both reasoning traces and generated files (plots, reports).
 
-1.  **Initialization**
-    
-    *   Environment setup and dependency loading
-        
-    *   Secure loading of API credentials
-        
-2.  **Memory Layer**
-    
-    *   Vector store initialized for long-term memory
-        
-    *   Embedding model configured for semantic storage and retrieval
-        
-3.  **Agent Orchestration**
-    
-    *   Multiple agents instantiated with defined responsibilities
-        
-    *   Agents communicate and delegate tasks
-        
-4.  **Simulation & Execution**
-    
-    *   Synthetic data generated to simulate system behavior
-        
-    *   Agents analyze data and generate insights
-        
-5.  **Artifacts**
-    
-    *   Analytical outputs (e.g., plots) saved to disk
-        
-    *   Demonstrates end-to-end agent collaboration
-        
-[![](https://mermaid.ink/img/pako:eNp9U11v2jAU_SvWfdokoIEQkkZTJVamvZBVGlsfmvTBJJdgLbGRY3eliP8-58MlDFQ_OPf6nHt9cm5ygFRkCCFsCvE33VKpyK9FwolZvyuUcb2RG_JDKFwL8Yf81JyjfE54y6n0Opd0tyUPMt1ipSRVTHCypHuULaNe90LIjHGqhIx7MZnnyNXziTfntNhXKu6eF_i3V0x13cQGZwzk2YWsCEsh9__recTUFC--xp_aiKzMhp_7N5VrzDLz_m3AeE4i41PxZS1v7iLG2TIaLmfDl8kHd7cir9ixYqUuGqPi1Z6rLSqWkgVVtIf0tDyyStOCvbUVc6nYhqaKfEcziD63p6GZ2nB413feYv0B1JTO7OugNdoW28k0WOdRi7yP5BzqwC5vQOt-C9nsUssZ8pGQk2tXpJy5Z6vPDhvag1Y7reIVfcGMWI8r4ywMIJcsg1BJjQMoUZa0TuFQt0rAjK_EBEITZrihulAJJPxoynaUPwlR2kopdL6FcEOLymR6l1GFC0bNt3KimBGivBeaKwinbtD0gPAArxBOfH8UBGNvHDj-ret4U38AewhdZ-Q7U9_3ZsHEM8fucQBvza3OKHDGM2c68Z1b13O8YDYAzJjxJWr_-FTwDcvh-A_E3k0b?type=png)](https://mermaid.live/edit#pako:eNp9U11v2jAU_SvWfdokoIEQkkZTJVamvZBVGlsfmvTBJJdgLbGRY3eliP8-58MlDFQ_OPf6nHt9cm5ygFRkCCFsCvE33VKpyK9FwolZvyuUcb2RG_JDKFwL8Yf81JyjfE54y6n0Opd0tyUPMt1ipSRVTHCypHuULaNe90LIjHGqhIx7MZnnyNXziTfntNhXKu6eF_i3V0x13cQGZwzk2YWsCEsh9__recTUFC--xp_aiKzMhp_7N5VrzDLz_m3AeE4i41PxZS1v7iLG2TIaLmfDl8kHd7cir9ixYqUuGqPi1Z6rLSqWkgVVtIf0tDyyStOCvbUVc6nYhqaKfEcziD63p6GZ2nB413feYv0B1JTO7OugNdoW28k0WOdRi7yP5BzqwC5vQOt-C9nsUssZ8pGQk2tXpJy5Z6vPDhvag1Y7reIVfcGMWI8r4ywMIJcsg1BJjQMoUZa0TuFQt0rAjK_EBEITZrihulAJJPxoynaUPwlR2kopdL6FcEOLymR6l1GFC0bNt3KimBGivBeaKwinbtD0gPAArxBOfH8UBGNvHDj-ret4U38AewhdZ-Q7U9_3ZsHEM8fucQBvza3OKHDGM2c68Z1b13O8YDYAzJjxJWr_-FTwDcvh-A_E3k0b)
+## Key Features
 
-Technologies Used
------------------
+* **Multi-Agent Architecture:** Explicit role assignment using the AutoGen framework.
+* **Persistent Vector Memory:** Implementation of a vector database (Chroma/FAISS) with `sentence-transformers` for semantic recall.
+* **Simulation Engine:** Synthetic data generation to test agent reasoning under pressure.
+* **Demonstration-Focused:** Designed as an interactive Jupyter Notebook for transparency and explainability.
 
-*   Python
-    
-*   Jupyter Notebook
-    
-*   AutoGen (agent orchestration)
-    
-*   SentenceTransformers (all-MiniLM-L6-v2)
-    
-*   Vector database (e.g., Chroma)
-    
-*   Matplotlib / Seaborn for visualization
-    
-*   Groq LPU (for LLM inference)
-    
+---
 
-How to Run
-----------
+## Technologies Used
 
-### Prerequisites
+* **Core:** Python 3.10+, Jupyter Notebook
+* **Orchestration:** Microsoft AutoGen
+* **Memory/Embeddings:** SentenceTransformers (`all-MiniLM-L6-v2`), ChromaDB/Vector Store
+* **Visualization:** Matplotlib, Seaborn
+* **Inference:** Groq LPU (compatible with OpenAI/GPT-4o logic)
 
-*   Python 3.10+
-    
-*   API access for the configured LLM provider
-    
+---
 
-### Steps
+## How to Run
 
-1.  Clone the repository
-    
-2.  Create a virtual environment (recommended)
-    
-3.  pip install -r requirements.txt
-    
-4.  Set required environment variables (e.g., GROQ\_API\_KEY)
-    
-5.  jupyter notebook Agentic\_Systems\_Lab.ipynb
-    
+### Option 1: Run in Cloud (Recommended)
+Click the badge above to open the notebook directly in Google Colab. You will need your own API keys.
 
-> Note: This project is designed for demonstration and exploration.For production use, the notebook logic should be modularized into services.
+### Option 2: Run Locally
+**Prerequisites:** Python 3.10+ and an API Key (Groq or OpenAI).
 
-Design Decisions & Trade-offs
------------------------------
+1. **Clone the repository**
+```bash
+   git clone [https://github.com/ishan-1010/CognitionFlow.git](https://github.com/ishan-1010/CognitionFlow.git)
+   cd CognitionFlow
+```
 
-*   **Notebook-first approach** was chosen for transparency and explainability
-    
-*   **Lightweight embeddings** were selected to balance performance and cost
-    
-*   **Agent orchestration** was prioritized over monolithic chains to study collaboration patterns
-    
+2. **Install dependencies**
+```bash
+pip install -r requirements.txt
+# Or install basics manually if requirements.txt is missing:
+# pip install pyautogen sentence-transformers matplotlib seaborn
 
-These choices favor clarity and experimentation over deployment readiness.
+```
 
-Limitations
------------
 
-*   Not optimized for production or large-scale deployment
-    
-*   Evaluation is qualitative rather than benchmark-driven
-    
-*   Agent behavior may be non-deterministic due to LLM inference
-    
+3. **Set Environment Variables**
+```bash
+export GROQ_API_KEY="your_key_here"
+# or export OPENAI_API_KEY="your_key_here"
 
-Future Work
------------
+```
 
-*   Modularize notebook code into reusable Python packages
-    
-*   Add quantitative evaluation of memory impact
-    
-*   Introduce a lightweight web or CLI interface
-    
-*   Experiment with additional agent roles and planning strategies
-    
 
-License
--------
+4. **Launch the Notebook**
+```bash
+jupyter notebook CognitionFlow.ipynb
+
+```
+
+
+
+---
+
+## Architecture (High-Level)
+
+1. **Initialization:** Environment setup and secure credential loading.
+2. **Memory Layer:** Vector store initialization for semantic retrieval.
+3. **Agent Orchestration:** Agents are instantiated with specific system messages and permitted interaction paths.
+4. **Simulation:** Synthetic data is injected into the environment.
+5. **Execution & Analysis:** Agents collaborate to process data and generate insights.
+6. **Artifacts:** Final plots and reports are saved to disk.
+
+---
+
+## Design Decisions & Trade-offs
+
+* **Notebook-first approach:** Chosen for immediate visual feedback and transparency of the "Chain of Thought" during development.
+* **Lightweight embeddings:** `all-MiniLM-L6-v2` was selected to balance performance and latency costs.
+* **Agent orchestration:** Prioritized collaborative loops over monolithic chains to study emergent behavior.
+
+---
+
+## Future Work
+
+* Modularize notebook logic into a deployable FastAPI service.
+* Add quantitative evaluation of memory retrieval accuracy.
+* Experiment with hierarchical agent teams (Manager -> Worker topology).
+
+---
+
+## License
 
 This project is released under the MIT License.
