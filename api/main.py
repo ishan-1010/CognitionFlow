@@ -6,7 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 # Add src to path so cognitionflow is importable when running from repo root
@@ -60,6 +60,12 @@ class RunResponse(BaseModel):
     run_id: str
     status: str
     message: str
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """Minimal web UI: run analysis and view report/plot."""
+    return _INDEX_HTML
 
 
 @app.get("/health")
@@ -116,3 +122,108 @@ def get_server_health_plot(run_id: str):
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Artifact not found")
     return FileResponse(path, media_type="image/png")
+
+
+_INDEX_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CognitionFlow</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 560px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #1a1a1a;
+      background: #f5f5f5;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { color: #555; margin-bottom: 1.5rem; }
+    button {
+      background: #0d6efd;
+      color: white;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      font-size: 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #0b5ed7; }
+    button:disabled { background: #6c757d; cursor: not-allowed; }
+    #status { margin-top: 1rem; padding: 0.75rem; background: #e9ecef; border-radius: 6px; min-height: 2rem; }
+    #links { margin-top: 1rem; }
+    #links a {
+      display: inline-block;
+      margin-right: 1rem;
+      margin-bottom: 0.5rem;
+      color: #0d6efd;
+      text-decoration: none;
+    }
+    #links a:hover { text-decoration: underline; }
+    .error { color: #dc3545; }
+  </style>
+</head>
+<body>
+  <h1>CognitionFlow</h1>
+  <p>Multi-agent RCA: run server health analysis and view the report and plot.</p>
+  <button id="runBtn" type="button">Run analysis</button>
+  <div id="status"></div>
+  <div id="links"></div>
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const status = document.getElementById('status');
+    const links = document.getElementById('links');
+
+    function setStatus(msg, isError) {
+      status.textContent = msg;
+      status.className = isError ? 'error' : '';
+    }
+
+    async function pollRun(runId) {
+      const base = window.location.origin;
+      for (let i = 0; i < 600; i++) {
+        const r = await fetch(base + '/runs/' + runId);
+        if (!r.ok) { setStatus('Run not found.', true); return; }
+        const data = await r.json();
+        if (data.status === 'completed') {
+          setStatus('Done.');
+          links.innerHTML =
+            '<a href="' + base + '/runs/' + runId + '/incident_report" target="_blank">View report</a>' +
+            '<a href="' + base + '/runs/' + runId + '/server_health.png" target="_blank">View plot</a>';
+          runBtn.disabled = false;
+          return;
+        }
+        if (data.status === 'failed') {
+          setStatus('Run failed: ' + (data.error || 'unknown'), true);
+          runBtn.disabled = false;
+          return;
+        }
+        setStatus('Running... (this may take 1–2 minutes)');
+        await new Promise(function(r) { setTimeout(r, 2000); });
+      }
+      setStatus('Timed out.', true);
+      runBtn.disabled = false;
+    }
+
+    runBtn.addEventListener('click', async function() {
+      runBtn.disabled = true;
+      links.innerHTML = '';
+      setStatus('Starting...');
+      try {
+        const r = await fetch(window.location.origin + '/run', { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) { setStatus('Error: ' + (data.detail || r.status), true); runBtn.disabled = false; return; }
+        setStatus('Running... (this may take 1–2 minutes)');
+        pollRun(data.run_id);
+      } catch (e) {
+        setStatus('Error: ' + e.message, true);
+        runBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+"""
