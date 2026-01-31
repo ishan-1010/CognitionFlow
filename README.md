@@ -83,7 +83,36 @@ jupyter notebook CognitionFlow.ipynb
 
 ```
 
+### Option 3: uv (recommended for local dev)
+```bash
+cd CognitionFlow
+uv venv --python 3.12
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+uv sync --all-extras
+cp .env.example .env       # add your GROQ_API_KEY or OPENAI_API_KEY
+jupyter notebook CognitionFlow.ipynb
+```
 
+### Run the API (FastAPI)
+```bash
+# From repo root, with .venv activated:
+uv run uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+# Then: POST http://localhost:8000/run to start a workflow; GET http://localhost:8000/runs/{run_id} for status.
+```
+
+### Run tests
+```bash
+uv run pytest tests/ -v
+```
+
+### Docker
+```bash
+docker build -t cognitionflow .
+docker run -p 8000:8000 -e GROQ_API_KEY=your_key cognitionflow
+```
+
+### Deploy (Railway, Render, Fly.io)
+Set `GROQ_API_KEY` or `OPENAI_API_KEY` in the host's environment; run the API with `uvicorn api.main:app --host 0.0.0.0 --port $PORT`.
 
 ---
 
