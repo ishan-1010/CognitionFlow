@@ -744,9 +744,10 @@ sequenceDiagram
       
       // Extract and highlight code blocks
       if (msgData.has_code && msgData.code_blocks && msgData.code_blocks.length > 0) {
+        const backticks = String.fromCharCode(96, 96, 96);
         msgData.code_blocks.forEach(code => {
           const highlighted = highlightCode(code);
-          const codeMarkdown = '```python\n' + code + '\n```';
+          const codeMarkdown = backticks + 'python\\n' + code + '\\n' + backticks;
           content = content.replace(
             escapeHtml(codeMarkdown),
             '<div class="code-block"><code>' + highlighted + '</code></div>'
