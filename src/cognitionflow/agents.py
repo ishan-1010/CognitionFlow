@@ -1,20 +1,18 @@
 """
-AutoGen agent team: Product Manager (proxy) and Senior Engineer (assistant) with optional memory.
+AutoGen agent team: Product Manager (proxy) and Senior Engineer (assistant).
+Lightweight version - no vector memory dependencies.
 """
 import autogen
 
 from cognitionflow.config import get_config, get_workspace_dir
-from cognitionflow.memory import ZeroCostMemory
 
 
 def build_agents(
     work_dir: str | None = None,
-    memory: ZeroCostMemory | None = None,
     llm_config: dict | None = None,
 ):
     """
     Build PM (UserProxy) and Engineer (Assistant) agents.
-    If memory is provided, it is attached to the engineer.
     """
     work_dir = work_dir or get_workspace_dir()
     llm_config = llm_config or get_config()
@@ -46,8 +44,5 @@ def build_agents(
     """,
         llm_config=llm_config,
     )
-
-    if memory is not None:
-        memory.add_to_agent(engineer_agent)
 
     return pm_agent, engineer_agent

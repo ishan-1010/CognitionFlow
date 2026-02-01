@@ -1,8 +1,5 @@
 numpy<2.0.0
-# torch CPU installed separately in Dockerfile (no CUDA)
 pyautogen==0.2.28
-chromadb
-sentence_transformers
 matplotlib
 seaborn
 polars
