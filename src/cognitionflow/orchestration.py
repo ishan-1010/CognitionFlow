@@ -1,6 +1,7 @@
 """
 Run the multi-agent RCA workflow: PM -> Engineer -> artifacts.
 Lightweight version without vector memory (ChromaDB/sentence-transformers removed).
+Real-time message streaming via callbacks.
 """
 import os
 import re
@@ -36,77 +37,67 @@ def _extract_code_blocks(content: str) -> list[str]:
     return matches
 
 
-def _parse_chat_messages(chat_history: list, on_message: Optional[Callable] = None) -> list[dict]:
-    """
-    Parse AutoGen chat history into structured messages.
-    Each message dict: {sender, receiver, content, timestamp, has_code, code_blocks, type}
-    """
-    messages = []
-    prev_sender = None
+def _make_message_dict(sender: str, receiver: str, content: str) -> dict:
+    """Create a structured message dict from agent communication."""
+    code_blocks = _extract_code_blocks(content)
+    has_code = len(code_blocks) > 0
     
-    for msg in chat_history:
-        if not isinstance(msg, dict):
-            continue
-            
-        content = msg.get("content", "")
-        role = msg.get("role", "")
-        
-        # Check if we already marked the sender
-        if "_sender" in msg:
-            sender = msg["_sender"]
-        else:
-            # AutoGen stores messages with role='assistant' for both agents
-            # We need to infer sender from context (alternating pattern)
-            # Or use the name from the message if available
-            sender_name = msg.get("name", "")
-            
-            # Infer sender from name or role pattern
-            if "Product_Manager" in sender_name or (role == "user" and not prev_sender):
-                sender = "Product_Manager"
-            elif "Senior_Engineer" in sender_name or (role == "assistant" and prev_sender != "Senior_Engineer"):
-                sender = "Senior_Engineer"
-            else:
-                # Fallback: alternate based on previous sender
-                if prev_sender == "Product_Manager":
-                    sender = "Senior_Engineer"
-                else:
-                    sender = "Product_Manager"
-        
-        # Determine receiver
-        receiver = "Senior_Engineer" if sender == "Product_Manager" else "Product_Manager"
-        prev_sender = sender
-        
-        # Extract code blocks
-        code_blocks = _extract_code_blocks(content)
-        has_code = len(code_blocks) > 0
-        
-        # Determine message type
-        msg_type = "agent_message"
-        if has_code:
-            msg_type = "code_generation"
-        if "TERMINATE" in content and not has_code:
-            msg_type = "termination"
-        
-        message_dict = {
-            "type": msg_type,
-            "sender": sender,
-            "receiver": receiver,
-            "content": content,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "has_code": has_code,
-            "code_blocks": code_blocks,
-        }
-        
-        messages.append(message_dict)
-        
-        # Call callback if provided
-        if on_message:
-            try:
-                on_message(message_dict)
-            except Exception:
-                pass  # Don't fail workflow if callback errors
+    # Determine message type
+    msg_type = "agent_message"
+    if has_code:
+        msg_type = "code_generation"
+    if "TERMINATE" in content:
+        msg_type = "termination"
+    # Check for code execution output
+    if "exitcode:" in content.lower() or "code output:" in content.lower():
+        msg_type = "code_execution"
     
-    return messages
+    return {
+        "type": msg_type,
+        "sender": sender,
+        "receiver": receiver,
+        "content": content,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "has_code": has_code,
+        "code_blocks": code_blocks,
+    }
+
+
+def _create_message_hook(agent_name: str, other_agent_name: str, on_message: Callable, streamed_messages: list):
+    """
+    Create a reply hook that streams messages in real-time.
+    This hook fires when an agent is about to generate a reply.
+    """
+    def hook(recipient, messages, sender, config):
+        """
+        AutoGen reply hook - fires when this agent receives messages.
+        We use it to stream the last message from the conversation.
+        """
+        if messages and on_message:
+            # Get the last message (the one just received)
+            last_msg = messages[-1] if isinstance(messages, list) else messages
+            if isinstance(last_msg, dict):
+                content = last_msg.get("content", "")
+                if content:
+                    # The sender of this message is the OTHER agent
+                    # (the agent_name is the recipient in this context)
+                    msg_dict = _make_message_dict(
+                        sender=other_agent_name,
+                        receiver=agent_name,
+                        content=content
+                    )
+                    # Avoid duplicates (AutoGen may call hooks multiple times)
+                    msg_key = f"{msg_dict['sender']}:{msg_dict['content'][:50]}"
+                    if msg_key not in [m.get('_key') for m in streamed_messages]:
+                        msg_dict['_key'] = msg_key
+                        streamed_messages.append(msg_dict)
+                        try:
+                            on_message(msg_dict)
+                        except Exception:
+                            pass
+        # Return False, None to let normal processing continue
+        return False, None
+    return hook
 
 
 def run_workflow(
@@ -121,7 +112,7 @@ def run_workflow(
     Args:
         task_prompt: Task description for agents
         work_dir: Directory for code execution and artifacts
-        on_message: Optional callback function called for each agent message.
+        on_message: Optional callback function called for each agent message IN REAL-TIME.
                    Receives dict: {type, sender, receiver, content, timestamp, has_code, code_blocks}
     
     Returns:
@@ -140,7 +131,10 @@ def run_workflow(
     engineer_agent.clear_history()
     pm_agent.clear_history()
 
-    # Send initial message callback
+    # Track messages for deduplication and final return
+    streamed_messages: list[dict] = []
+
+    # Send initial phase change callback
     if on_message:
         try:
             on_message({
@@ -152,47 +146,60 @@ def run_workflow(
         except Exception:
             pass
 
+    # Register real-time message hooks on both agents
+    # These fire DURING the chat, enabling live streaming
+    if on_message:
+        # Hook on PM: fires when PM receives a message from Engineer
+        pm_hook = _create_message_hook(
+            agent_name="Product_Manager",
+            other_agent_name="Senior_Engineer", 
+            on_message=on_message,
+            streamed_messages=streamed_messages
+        )
+        pm_agent.register_reply(
+            trigger=engineer_agent,
+            reply_func=pm_hook,
+            position=0  # Run first, before normal reply generation
+        )
+        
+        # Hook on Engineer: fires when Engineer receives a message from PM
+        eng_hook = _create_message_hook(
+            agent_name="Senior_Engineer",
+            other_agent_name="Product_Manager",
+            on_message=on_message,
+            streamed_messages=streamed_messages
+        )
+        engineer_agent.register_reply(
+            trigger=pm_agent,
+            reply_func=eng_hook,
+            position=0
+        )
+        
+        # Send the initial task prompt as first message
+        try:
+            init_msg = _make_message_dict(
+                sender="Product_Manager",
+                receiver="Senior_Engineer",
+                content=task_prompt
+            )
+            init_msg['_key'] = f"Product_Manager:{task_prompt[:50]}"
+            streamed_messages.append(init_msg)
+            on_message(init_msg)
+        except Exception:
+            pass
+
     result = pm_agent.initiate_chat(engineer_agent, message=task_prompt)
 
-    # Extract conversation history
-    # AutoGen stores messages in agent.chat_messages dict
-    # Format: {recipient_agent: [list of messages]}
-    all_messages = []
-    
-    # Try to get from ChatResult first
-    if hasattr(result, 'chat_history') and result.chat_history:
-        all_messages = result.chat_history
-    else:
-        # Get messages from PM's perspective (messages sent to Engineer)
-        pm_to_eng = pm_agent.chat_messages.get(engineer_agent, [])
-        # Get messages from Engineer's perspective (messages sent to PM)
-        eng_to_pm = engineer_agent.chat_messages.get(pm_agent, [])
-        
-        # Combine: PM sends first (task prompt), then alternate
-        # We need to interleave them properly
-        combined = []
-        max_len = max(len(pm_to_eng), len(eng_to_pm))
-        for i in range(max_len):
-            if i < len(pm_to_eng):
-                msg = pm_to_eng[i]
-                if isinstance(msg, dict):
-                    msg['_sender'] = 'Product_Manager'
-                combined.append(msg)
-            if i < len(eng_to_pm):
-                msg = eng_to_pm[i]
-                if isinstance(msg, dict):
-                    msg['_sender'] = 'Senior_Engineer'
-                combined.append(msg)
-        
-        all_messages = combined
-    
-    # Parse messages
-    parsed_messages = _parse_chat_messages(all_messages, on_message)
+    # Clean up message keys before returning
+    final_messages = []
+    for msg in streamed_messages:
+        clean_msg = {k: v for k, v in msg.items() if not k.startswith('_')}
+        final_messages.append(clean_msg)
 
     return {
         "result": result,
         "work_dir": work_dir,
         "artifact_report": os.path.join(work_dir, "incident_report.md"),
         "artifact_plot": os.path.join(work_dir, "server_health.png"),
-        "messages": parsed_messages,
+        "messages": final_messages,
     }
