@@ -3,7 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install deps from lockfile or requirements
+# Install torch CPU-only first (much smaller, no CUDA libs)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
