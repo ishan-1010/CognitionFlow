@@ -3,11 +3,15 @@ FastAPI service for CognitionFlow: trigger RCA workflow and return artifact path
 """
 import os
 import uuid
+import json
+import queue
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 # Add src to path so cognitionflow is importable when running from repo root
 import sys
@@ -20,26 +24,77 @@ from cognitionflow.config import load_env, get_workspace_dir
 from cognitionflow.orchestration import run_workflow, DEFAULT_TASK_PROMPT
 
 
-# Optional: persist run ids and paths for GET /runs/{id}
+# Store run state and message queues for SSE streaming
 RUNS: dict[str, dict] = {}
+RUN_QUEUES: dict[str, queue.Queue] = {}
 
 
 def _run_sync(work_dir: str, run_id: str) -> None:
-    """Run workflow synchronously and record result."""
+    """Run workflow synchronously and record result. Pushes messages to queue for SSE."""
+    q = RUN_QUEUES.get(run_id)
+    start_time = datetime.utcnow()
+    
+    def on_message(msg: dict) -> None:
+        """Callback to push messages to queue for SSE streaming."""
+        if q:
+            try:
+                q.put(msg)
+            except Exception:
+                pass  # Don't fail if queue is closed
+    
     try:
         load_env()
+        
+        # Send phase change
+        if q:
+            q.put({
+                "type": "phase_change",
+                "phase": "initializing",
+                "message": "Initializing agents...",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            })
+        
         result = run_workflow(
             task_prompt=DEFAULT_TASK_PROMPT,
             work_dir=work_dir,
+            on_message=on_message,
         )
+        
+        end_time = datetime.utcnow()
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        
+        # Send completion message
+        if q:
+            q.put({
+                "type": "done",
+                "status": "completed",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            })
+        
         RUNS[run_id] = {
             "status": "completed",
             "work_dir": result["work_dir"],
             "artifact_report": result["artifact_report"],
             "artifact_plot": result["artifact_plot"],
+            "started_at": start_time.isoformat() + "Z",
+            "completed_at": end_time.isoformat() + "Z",
+            "duration_ms": duration_ms,
+            "messages": result.get("messages", []),
         }
     except Exception as e:
-        RUNS[run_id] = {"status": "failed", "error": str(e)}
+        if q:
+            q.put({
+                "type": "done",
+                "status": "failed",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            })
+        RUNS[run_id] = {
+            "status": "failed",
+            "error": str(e),
+            "started_at": start_time.isoformat() + "Z",
+            "failed_at": datetime.utcnow().isoformat() + "Z",
+        }
 
 
 @asynccontextmanager
@@ -77,20 +132,30 @@ def health():
 @app.post("/run", response_model=RunResponse)
 def run_analysis(background_tasks: BackgroundTasks):
     """
-    Start the RCA workflow. Runs in background; use GET /runs/{run_id} for status and artifacts.
+    Start the RCA workflow. Runs in background; use GET /runs/{run_id}/stream for SSE or GET /runs/{run_id} for status.
     """
     run_id = str(uuid.uuid4())
     base_dir = get_workspace_dir()
     work_dir = os.path.join(base_dir, run_id)
     os.makedirs(work_dir, exist_ok=True)
 
-    RUNS[run_id] = {"status": "running", "work_dir": work_dir}
+    # Create message queue for SSE streaming
+    RUN_QUEUES[run_id] = queue.Queue()
+    
+    RUNS[run_id] = {
+        "status": "running",
+        "work_dir": work_dir,
+        "started_at": datetime.utcnow().isoformat() + "Z",
+        "messages": [],
+        "current_phase": "initializing",
+    }
+    
     background_tasks.add_task(_run_sync, work_dir, run_id)
 
     return RunResponse(
         run_id=run_id,
         status="started",
-        message="Workflow started. Poll GET /runs/{run_id} for status and artifact paths.",
+        message="Workflow started. Connect to GET /runs/{run_id}/stream for real-time updates.",
     )
 
 
@@ -100,6 +165,63 @@ def get_run(run_id: str):
     if run_id not in RUNS:
         raise HTTPException(status_code=404, detail="Run not found")
     return RUNS[run_id]
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str):
+    """SSE endpoint: stream agent messages in real-time."""
+    if run_id not in RUNS:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    q = RUN_QUEUES.get(run_id)
+    if not q:
+        raise HTTPException(status_code=404, detail="Run queue not found")
+    
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    # Get message with timeout to allow checking if run is done
+                    try:
+                        msg = q.get(timeout=1.0)
+                    except queue.Empty:
+                        # Check if run is complete
+                        run_state = RUNS.get(run_id, {})
+                        if run_state.get("status") in ("completed", "failed"):
+                            yield {
+                                "event": "done",
+                                "data": json.dumps({
+                                    "type": "done",
+                                    "status": run_state.get("status"),
+                                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                                })
+                            }
+                            break
+                        continue
+                    
+                    if msg.get("type") == "done":
+                        yield {
+                            "event": "done",
+                            "data": json.dumps(msg)
+                        }
+                        break
+                    
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(msg)
+                    }
+                except Exception as e:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({"error": str(e)})
+                    }
+                    break
+        finally:
+            # Cleanup queue when done
+            if run_id in RUN_QUEUES:
+                del RUN_QUEUES[run_id]
+    
+    return EventSourceResponse(event_generator())
 
 
 @app.get("/runs/{run_id}/incident_report")
@@ -130,6 +252,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CognitionFlow - Multi-Agent RCA Pipeline</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -139,13 +262,18 @@ _INDEX_HTML = """<!DOCTYPE html>
       color: #e2e8f0;
     }
     .container {
-      max-width: 720px;
+      max-width: 900px;
       margin: 0 auto;
-      padding: 3rem 1.5rem;
+      padding: 2rem 1.5rem;
     }
     header {
       text-align: center;
-      margin-bottom: 2.5rem;
+      margin-bottom: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
     }
     .logo {
       font-size: 2.5rem;
@@ -154,11 +282,27 @@ _INDEX_HTML = """<!DOCTYPE html>
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      margin-bottom: 0.5rem;
     }
     .tagline {
       color: #94a3b8;
       font-size: 1.1rem;
+    }
+    .header-actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .btn-secondary {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover {
+      background: rgba(59, 130, 246, 0.3);
     }
     .card {
       background: rgba(30, 41, 59, 0.8);
@@ -209,6 +353,70 @@ _INDEX_HTML = """<!DOCTYPE html>
     }
     .run-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4); }
     .run-btn:disabled { background: #475569; cursor: not-allowed; transform: none; box-shadow: none; }
+    .conversation-panel {
+      max-height: 500px;
+      overflow-y: auto;
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-top: 1rem;
+      display: none;
+    }
+    .conversation-panel.active {
+      display: block;
+    }
+    .message {
+      margin-bottom: 1.5rem;
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .agent-badge {
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .badge-pm {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+    }
+    .badge-eng {
+      background: rgba(167, 139, 250, 0.2);
+      color: #a78bfa;
+    }
+    .message-time {
+      color: #64748b;
+      font-size: 0.75rem;
+    }
+    .message-content {
+      color: #cbd5e1;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .code-block {
+      background: #0f172a;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 0.75rem 0;
+      overflow-x: auto;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      font-size: 0.85rem;
+      color: #e2e8f0;
+    }
+    .code-block code {
+      color: #60a5fa;
+    }
     .status-box {
       margin-top: 1.5rem;
       padding: 1rem;
@@ -260,6 +468,61 @@ _INDEX_HTML = """<!DOCTYPE html>
       color: #64748b;
       margin: 0;
     }
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 1000;
+      overflow-y: auto;
+    }
+    .modal.active {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .modal-content {
+      background: #1e293b;
+      border-radius: 16px;
+      padding: 2rem;
+      max-width: 800px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+    .modal-header h2 {
+      color: #f1f5f9;
+      font-size: 1.5rem;
+    }
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.5rem;
+      line-height: 1;
+    }
+    .close-btn:hover {
+      color: #e2e8f0;
+    }
+    .mermaid {
+      background: rgba(15, 23, 42, 0.5);
+      padding: 1.5rem;
+      border-radius: 8px;
+      margin: 1rem 0;
+    }
     footer {
       text-align: center;
       margin-top: 2rem;
@@ -268,13 +531,39 @@ _INDEX_HTML = """<!DOCTYPE html>
     }
     footer a { color: #60a5fa; text-decoration: none; }
     footer a:hover { text-decoration: underline; }
+    .typing-indicator {
+      display: inline-flex;
+      gap: 0.25rem;
+      padding: 0.5rem 1rem;
+      background: rgba(59, 130, 246, 0.1);
+      border-radius: 8px;
+      margin-top: 0.5rem;
+    }
+    .typing-dot {
+      width: 8px;
+      height: 8px;
+      background: #60a5fa;
+      border-radius: 50%;
+      animation: typing 1.4s infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
+      30% { transform: translateY(-10px); opacity: 1; }
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <div class="logo">CognitionFlow</div>
-      <p class="tagline">Multi-Agent Root Cause Analysis Pipeline</p>
+      <div>
+        <div class="logo">CognitionFlow</div>
+        <p class="tagline">Multi-Agent Root Cause Analysis Pipeline</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn-secondary" id="howItWorksBtn">How It Works</button>
+      </div>
     </header>
 
     <div class="card">
@@ -311,9 +600,19 @@ _INDEX_HTML = """<!DOCTYPE html>
 
     <div class="card run-section">
       <h2>Run Analysis</h2>
-      <p>Click below to trigger the multi-agent workflow. The agents will simulate server logs, detect anomalies, generate a visualization, and write an incident report.</p>
+      <p>Click below to trigger the multi-agent workflow. Watch the agents collaborate in real-time below.</p>
       <button id="runBtn" class="run-btn" type="button">Start Analysis</button>
       <div id="status" class="status-box"></div>
+      
+      <div id="conversation" class="conversation-panel">
+        <div id="messages"></div>
+        <div id="typingIndicator" class="typing-indicator" style="display: none;">
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+        </div>
+      </div>
+      
       <div id="links" class="results"></div>
     </div>
 
@@ -323,59 +622,241 @@ _INDEX_HTML = """<!DOCTYPE html>
     </footer>
   </div>
 
+  <!-- Architecture Modal -->
+  <div id="modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>How CognitionFlow Works</h2>
+        <button class="close-btn" id="closeModal">&times;</button>
+      </div>
+      <div>
+        <h3 style="color: #f1f5f9; margin-bottom: 1rem;">System Architecture</h3>
+        <div class="mermaid">
+sequenceDiagram
+    participant Browser
+    participant FastAPI
+    participant PM as Product_Manager
+    participant Eng as Senior_Engineer
+    participant LLM as Groq LLM
+    
+    Browser->>FastAPI: POST /run
+    FastAPI-->>Browser: run_id
+    Browser->>FastAPI: GET /runs/{id}/stream (SSE)
+    
+    FastAPI->>PM: initiate_chat()
+    PM->>Eng: Task prompt
+    Note over PM,Eng: AutoGen callback fires
+    FastAPI-->>Browser: SSE: PM message
+    
+    Eng->>LLM: Generate code
+    LLM-->>Eng: Python code
+    Note over PM,Eng: AutoGen callback fires
+    FastAPI-->>Browser: SSE: Engineer message
+    
+    PM->>PM: Execute code
+    Note over PM,Eng: Execution callback
+    FastAPI-->>Browser: SSE: Code output
+    
+    Eng->>PM: TERMINATE
+    FastAPI-->>Browser: SSE: Complete
+        </div>
+        
+        <h3 style="color: #f1f5f9; margin-top: 2rem; margin-bottom: 1rem;">Agent Roles</h3>
+        <div style="display: grid; gap: 1rem;">
+          <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px;">
+            <h4 style="color: #60a5fa; margin-bottom: 0.5rem;">Product Manager</h4>
+            <p style="color: #94a3b8; font-size: 0.9rem;">
+              Orchestrates the workflow, executes generated code, validates results, and manages the conversation flow.
+              Uses AutoGen's UserProxyAgent to handle code execution in a sandboxed environment.
+            </p>
+          </div>
+          <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px;">
+            <h4 style="color: #a78bfa; margin-bottom: 0.5rem;">Senior Engineer</h4>
+            <p style="color: #94a3b8; font-size: 0.9rem;">
+              Generates Python code using Polars for data manipulation and Seaborn for visualization.
+              Communicates with Groq LLM to produce production-ready code that solves the RCA task.
+            </p>
+          </div>
+        </div>
+        
+        <h3 style="color: #f1f5f9; margin-top: 2rem; margin-bottom: 1rem;">Tech Stack</h3>
+        <ul style="color: #94a3b8; line-height: 2;">
+          <li><strong style="color: #e2e8f0;">Microsoft AutoGen</strong>: Multi-agent orchestration framework</li>
+          <li><strong style="color: #e2e8f0;">Groq LPU</strong>: Low-latency LLM inference (GPT-compatible)</li>
+          <li><strong style="color: #e2e8f0;">FastAPI</strong>: Async Python web framework</li>
+          <li><strong style="color: #e2e8f0;">Server-Sent Events (SSE)</strong>: Real-time message streaming</li>
+          <li><strong style="color: #e2e8f0;">Polars</strong>: High-performance DataFrame library</li>
+          <li><strong style="color: #e2e8f0;">Seaborn</strong>: Statistical visualization library</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
   <script>
+    mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+    
     const runBtn = document.getElementById('runBtn');
     const status = document.getElementById('status');
     const links = document.getElementById('links');
+    const conversation = document.getElementById('conversation');
+    const messages = document.getElementById('messages');
+    const typingIndicator = document.getElementById('typingIndicator');
+    const howItWorksBtn = document.getElementById('howItWorksBtn');
+    const modal = document.getElementById('modal');
+    const closeModal = document.getElementById('closeModal');
+    let eventSource = null;
 
     function setStatus(msg, type) {
       status.textContent = msg;
       status.className = 'status-box' + (type ? ' ' + type : '');
     }
 
-    async function pollRun(runId) {
+    function formatTime(timestamp) {
+      if (!timestamp) return '';
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString();
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function highlightCode(code) {
+      // Simple Python syntax highlighting
+      return escapeHtml(code)
+        .replace(/(import|from|def|class|if|elif|else|for|while|return|try|except|with|as|in|and|or|not|True|False|None)\b/g, '<span style="color: #c678dd;">$1</span>')
+        .replace(/(\d+\.?\d*)/g, '<span style="color: #d19a66;">$1</span>')
+        .replace(/(".*?"|'.*?')/g, '<span style="color: #98c379;">$1</span>');
+    }
+
+    function addMessage(msgData) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'message';
+      
+      const sender = msgData.sender || 'Unknown';
+      const isPM = sender.includes('Product_Manager') || sender.includes('PM');
+      const badgeClass = isPM ? 'badge-pm' : 'badge-eng';
+      const badgeText = isPM ? 'Product Manager' : 'Senior Engineer';
+      
+      let content = escapeHtml(msgData.content || '');
+      
+      // Extract and highlight code blocks
+      if (msgData.has_code && msgData.code_blocks && msgData.code_blocks.length > 0) {
+        msgData.code_blocks.forEach(code => {
+          const highlighted = highlightCode(code);
+          const codeMarkdown = '```python\n' + code + '\n```';
+          content = content.replace(
+            escapeHtml(codeMarkdown),
+            '<div class="code-block"><code>' + highlighted + '</code></div>'
+          );
+        });
+      }
+      
+      msgDiv.innerHTML = `
+        <div class="message-header">
+          <span class="agent-badge ${badgeClass}">${badgeText}</span>
+          <span class="message-time">${formatTime(msgData.timestamp)}</span>
+        </div>
+        <div class="message-content">${content}</div>
+      `;
+      
+      messages.appendChild(msgDiv);
+      conversation.scrollTop = conversation.scrollHeight;
+      conversation.classList.add('active');
+    }
+
+    function streamRun(runId) {
       const base = window.location.origin;
-      for (let i = 0; i < 300; i++) {
+      eventSource = new EventSource(base + '/runs/' + runId + '/stream');
+      
+      typingIndicator.style.display = 'flex';
+      
+      eventSource.addEventListener('message', function(e) {
         try {
-          const r = await fetch(base + '/runs/' + runId);
-          if (!r.ok) { setStatus('Run not found. The server may have restarted.', 'error'); runBtn.disabled = false; return; }
-          const data = await r.json();
+          const msg = JSON.parse(e.data);
+          
+          if (msg.type === 'phase_change') {
+            setStatus(msg.message || 'Phase: ' + msg.phase);
+          } else if (msg.type === 'agent_message' || msg.type === 'code_generation' || msg.type === 'termination') {
+            addMessage(msg);
+            typingIndicator.style.display = 'none';
+          }
+        } catch (err) {
+          console.error('Error parsing SSE message:', err);
+        }
+      });
+      
+      eventSource.addEventListener('done', function(e) {
+        try {
+          const data = JSON.parse(e.data);
+          typingIndicator.style.display = 'none';
+          
           if (data.status === 'completed') {
             setStatus('Analysis complete!', 'success');
             links.innerHTML =
               '<a class="result-link" href="' + base + '/runs/' + runId + '/incident_report" target="_blank">View Incident Report</a>' +
               '<a class="result-link" href="' + base + '/runs/' + runId + '/server_health.png" target="_blank">View Health Plot</a>';
             runBtn.disabled = false;
-            return;
-          }
-          if (data.status === 'failed') {
+          } else if (data.status === 'failed') {
             setStatus('Analysis failed: ' + (data.error || 'Unknown error'), 'error');
             runBtn.disabled = false;
-            return;
           }
-          setStatus('Agents working... (typically 1-2 minutes)');
-        } catch (e) {
-          setStatus('Connection error. Retrying...', 'error');
+          
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+        } catch (err) {
+          console.error('Error parsing done event:', err);
         }
-        await new Promise(function(r) { setTimeout(r, 2000); });
-      }
-      setStatus('Timed out waiting for results.', 'error');
-      runBtn.disabled = false;
+      });
+      
+      eventSource.addEventListener('error', function(e) {
+        console.error('SSE error:', e);
+        typingIndicator.style.display = 'none';
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+      });
     }
 
     runBtn.addEventListener('click', async function() {
       runBtn.disabled = true;
       links.innerHTML = '';
+      messages.innerHTML = '';
+      conversation.classList.remove('active');
       setStatus('Initializing agents...');
+      
       try {
         const r = await fetch(window.location.origin + '/run', { method: 'POST' });
         const data = await r.json();
-        if (!r.ok) { setStatus('Error: ' + (data.detail || r.status), 'error'); runBtn.disabled = false; return; }
-        setStatus('Agents working... (typically 1-2 minutes)');
-        pollRun(data.run_id);
+        if (!r.ok) {
+          setStatus('Error: ' + (data.detail || r.status), 'error');
+          runBtn.disabled = false;
+          return;
+        }
+        setStatus('Agents working... (watch conversation below)');
+        streamRun(data.run_id);
       } catch (e) {
         setStatus('Error: ' + e.message, 'error');
         runBtn.disabled = false;
+      }
+    });
+
+    howItWorksBtn.addEventListener('click', function() {
+      modal.classList.add('active');
+    });
+
+    closeModal.addEventListener('click', function() {
+      modal.classList.remove('active');
+    });
+
+    modal.addEventListener('click', function(e) {
+      if (e.target === modal) {
+        modal.classList.remove('active');
       }
     });
   </script>
