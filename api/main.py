@@ -302,7 +302,6 @@ _INDEX_HTML = """<!DOCTYPE html>
       color: #94a3b8;
       font-size: 1.1rem;
     }
-    /* ... existing header-actions ... */
     .header-actions {
       display: flex;
       gap: 0.75rem;
@@ -333,9 +332,42 @@ _INDEX_HTML = """<!DOCTYPE html>
       margin-bottom: 1rem;
       color: #f1f5f9;
     }
+    .card p {
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 1rem;
+    }
+    .tech-stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+    .tech-badge {
+      background: rgba(96, 165, 250, 0.15);
+      color: #60a5fa;
+      padding: 0.35rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 500;
+    }
     .run-section {
       text-align: center;
     }
+    .run-btn {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      color: white;
+      border: none;
+      padding: 1rem 2.5rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    }
+    .run-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4); }
+    .run-btn:disabled { background: #475569; cursor: not-allowed; transform: none; box-shadow: none; }
     /* Fixed Alignment for Conversation */
     .conversation-panel {
       max-height: 500px;
@@ -353,6 +385,34 @@ _INDEX_HTML = """<!DOCTYPE html>
     .message {
       margin-bottom: 1.5rem;
       animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .agent-badge {
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .badge-pm {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+    }
+    .badge-eng {
+      background: rgba(167, 139, 250, 0.2);
+      color: #a78bfa;
+    }
+    .message-time {
+      color: #64748b;
+      font-size: 0.75rem;
     }
     .message-content {
       color: #cbd5e1;
@@ -384,19 +444,11 @@ _INDEX_HTML = """<!DOCTYPE html>
       color: inherit;
     }
 
-    /* ... existing styles ... */
-    
-    /* Ensure code highlighting colors work */
+    /* Code syntax highlighting */
     .keyword { color: #c678dd; }
     .number { color: #d19a66; }
     .string { color: #98c379; }
 
-    /* ... rest of CSS ... */
-    /* Skipping strictly unchanged sections for brevity in this tool call, but ensuring critical CSS is replaced */
-    
-    /* ... previous styles ... */
-    
-    /* Re-inserting the previous CSS that was correct to ensure continuity */
     .status-box {
       margin-top: 1.5rem;
       padding: 1rem;
@@ -405,16 +457,6 @@ _INDEX_HTML = """<!DOCTYPE html>
       min-height: 3rem;
       color: #cbd5e1;
     }
-    /* ... */
-  </style>
-</head>
-<body>
-<!-- ... existing body until script ... -->
-<!-- I'll use a separate replace for the script part or just regex replace relevant functions? 
-     Actually replacing the <style> and <script> logic. 
-     Since replace_file_content is best for contiguous blocks, I will replace the head/style and the script separately.
--->
-
     .status-box.error { color: #f87171; background: rgba(248, 113, 113, 0.1); }
     .status-box.success { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
     .results {
