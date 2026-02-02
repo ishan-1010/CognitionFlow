@@ -788,12 +788,7 @@ sequenceDiagram
       // Use marked to parse content
       // Note: msgData.content contains the full message including code blocks.
       // marked deals with them correctly.
-      let contentHtml = DOMPurify ? DOMPurify.sanitize(marked.parse(msgData.content || '')) : marked.parse(msgData.content || '');
-      // Fallback if DOMPurify is not present (it's not, but good practice). 
-      // In this case, since it's an internal tool, we trust the LLM output mostly.
-      if (typeof DOMPurify === 'undefined') {
-         contentHtml = marked.parse(msgData.content || '');
-      }
+      let contentHtml = marked.parse(msgData.content || '');
       
       msgDiv.innerHTML = `
         <div class="message-header">
