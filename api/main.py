@@ -175,6 +175,20 @@ async def stream_run(run_id: str):
     
     q = RUN_QUEUES.get(run_id)
     if not q:
+        # If run is already done, return final status immediately
+        run_state = RUNS.get(run_id, {})
+        if run_state.get("status") in ("completed", "failed"):
+            async def finished_generator():
+                yield {
+                    "event": "done",
+                    "data": json.dumps({
+                        "type": "done",
+                        "status": run_state.get("status"),
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                    })
+                }
+            return EventSourceResponse(finished_generator())
+
         raise HTTPException(status_code=404, detail="Run queue not found")
     
     async def event_generator():
@@ -726,8 +740,8 @@ sequenceDiagram
     function highlightCode(code) {
       // Simple Python syntax highlighting
       return escapeHtml(code)
-        .replace(/(import|from|def|class|if|elif|else|for|while|return|try|except|with|as|in|and|or|not|True|False|None)\\b/g, '<span style="color: #c678dd;">$1</span>')
-        .replace(/(\\d+\\.?\\d*)/g, '<span style="color: #d19a66;">$1</span>')
+        .replace(/(import|from|def|class|if|elif|else|for|while|return|try|except|with|as|in|and|or|not|True|False|None)\b/g, '<span style="color: #c678dd;">$1</span>')
+        .replace(/(\b\d+\.?\d*\b)/g, '<span style="color: #d19a66;">$1</span>')
         .replace(/(".*?"|'.*?')/g, '<span style="color: #98c379;">$1</span>');
     }
 

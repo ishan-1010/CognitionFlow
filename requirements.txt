@@ -4,6 +4,7 @@ matplotlib
 seaborn
 polars
 pandas
+pyarrow
 python-dotenv>=1.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
