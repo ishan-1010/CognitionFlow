@@ -8,15 +8,19 @@ import re
 from datetime import datetime
 from typing import Callable, Optional
 
-from cognitionflow.config import get_config, get_workspace_dir
+from cognitionflow.config import get_config, get_workspace_dir, get_config_with_overrides
 from cognitionflow.agents import build_agents
 
 
-DEFAULT_TASK_PROMPT = """
+def build_task_prompt(anomaly_count: int = 5) -> str:
+    """
+    Generate task prompt with configurable anomaly count.
+    """
+    return f"""
 **Mission:** Perform a Root Cause Analysis on server instability.
 
 **Tasks:**
-1. **Data Simulation:** Generate 1,000 server logs (Timestamp, Latency, Status). Inject distinct 'Spike' anomalies.
+1. **Data Simulation:** Generate 1,000 server logs (Timestamp, Latency, Status). Inject exactly {anomaly_count} distinct 'Spike' anomalies.
 2. **Visualization:** - Create a dark-themed plot ('server_health.png').
     - Plot Latency vs. Moving Average.
     - Highlight anomalies in Red.
@@ -28,6 +32,9 @@ DEFAULT_TASK_PROMPT = """
 - Use the libraries I taught you (Polars/Seaborn).
 - Save both files locally.
 """
+
+
+DEFAULT_TASK_PROMPT = build_task_prompt(5)
 
 
 def _extract_code_blocks(content: str) -> list[str]:
@@ -104,28 +111,41 @@ def run_workflow(
     task_prompt: str | None = None,
     work_dir: str | None = None,
     on_message: Optional[Callable] = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    anomaly_count: int = 5,
+    agent_mode: str = "standard",
 ):
     """
     Execute the agent workflow. Creates workspace and agents; runs chat; returns result.
     Artifacts (server_health.png, incident_report.md) are written under work_dir.
     
     Args:
-        task_prompt: Task description for agents
+        task_prompt: Task description for agents (uses default if None)
         work_dir: Directory for code execution and artifacts
-        on_message: Optional callback function called for each agent message IN REAL-TIME.
-                   Receives dict: {type, sender, receiver, content, timestamp, has_code, code_blocks}
+        on_message: Optional callback for real-time message streaming
+        model: LLM model override (e.g., 'llama3-8b-8192')
+        temperature: LLM temperature override (0.0-1.0)
+        anomaly_count: Number of anomalies to inject (1-10)
+        agent_mode: Agent verbosity: 'standard', 'detailed', or 'concise'
     
     Returns:
         dict with result, work_dir, artifacts, and messages
     """
-    task_prompt = task_prompt or DEFAULT_TASK_PROMPT
+    # Build task prompt with anomaly count if not custom
+    if task_prompt is None:
+        task_prompt = build_task_prompt(anomaly_count)
+    
     work_dir = work_dir or get_workspace_dir()
-
     os.makedirs(work_dir, exist_ok=True)
 
+    # Get LLM config with overrides
+    llm_config = get_config_with_overrides(model=model, temperature=temperature)
+    
     pm_agent, engineer_agent = build_agents(
         work_dir=work_dir,
-        llm_config=get_config(),
+        llm_config=llm_config,
+        agent_mode=agent_mode,
     )
 
     engineer_agent.clear_history()

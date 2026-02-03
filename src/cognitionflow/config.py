@@ -56,3 +56,35 @@ def get_workspace_dir() -> str:
     """Directory for agent code execution and artifacts."""
     load_env()
     return os.environ.get("COGNITIONFLOW_WORKSPACE", "project_workspace")
+
+
+# Available models for user selection
+AVAILABLE_MODELS = [
+    {"id": "llama3-8b-8192", "name": "Llama 3 8B", "description": "Fast, efficient"},
+    {"id": "llama3-70b-8192", "name": "Llama 3 70B", "description": "Most capable"},
+    {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "description": "Balanced"},
+]
+
+AGENT_MODES = [
+    {"id": "standard", "name": "Standard", "description": "Balanced output"},
+    {"id": "detailed", "name": "Detailed", "description": "Verbose explanations"},
+    {"id": "concise", "name": "Concise", "description": "Minimal, fast"},
+]
+
+
+def get_config_with_overrides(
+    model: str | None = None,
+    temperature: float | None = None,
+) -> dict:
+    """
+    Build LLM config with optional runtime overrides.
+    Used for user-customizable runs.
+    """
+    base_config = get_config()
+    
+    if model:
+        base_config["config_list"][0]["model"] = model
+    if temperature is not None:
+        base_config["temperature"] = temperature
+    
+    return base_config

@@ -1,16 +1,26 @@
 """
 FastAPI service for CognitionFlow: trigger RCA workflow and return artifact paths.
+Enhanced with user customization, memory optimization, and production features.
 """
+# Force Agg backend before any matplotlib imports (memory optimization)
+import matplotlib
+matplotlib.use('Agg')
+
 import os
 import uuid
 import json
 import queue
+import asyncio
+import shutil
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 # Add src to path so cognitionflow is importable when running from repo root
@@ -20,16 +30,131 @@ _src = os.path.join(os.path.dirname(_here), "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from cognitionflow.config import load_env, get_workspace_dir
+from cognitionflow.config import (
+    load_env, get_workspace_dir, 
+    AVAILABLE_MODELS, AGENT_MODES
+)
 from cognitionflow.orchestration import run_workflow, DEFAULT_TASK_PROMPT
 
+# Import database functions
+from api.db import save_run, get_run_history, get_metrics as db_get_metrics
+
+
+# ============================================================================
+# Memory Optimization: Concurrent Run Limiter
+# ============================================================================
+MAX_CONCURRENT_RUNS = 2
+run_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 # Store run state and message queues for SSE streaming
 RUNS: dict[str, dict] = {}
 RUN_QUEUES: dict[str, queue.Queue] = {}
 
+# Rate limiting: simple in-memory counter (resets on restart)
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX = 10  # requests per window
+rate_limit_store: dict[str, list] = defaultdict(list)
 
-def _run_sync(work_dir: str, run_id: str) -> None:
+
+# ============================================================================
+# Workspace Cleanup (Memory Optimization)
+# ============================================================================
+CLEANUP_AGE_HOURS = 1  # Delete workspaces older than this
+
+
+def cleanup_old_workspaces():
+    """Delete workspace folders older than CLEANUP_AGE_HOURS."""
+    base_dir = get_workspace_dir()
+    if not os.path.exists(base_dir):
+        return
+    
+    cutoff = datetime.utcnow() - timedelta(hours=CLEANUP_AGE_HOURS)
+    cleaned = 0
+    
+    for folder in os.listdir(base_dir):
+        folder_path = os.path.join(base_dir, folder)
+        if not os.path.isdir(folder_path):
+            continue
+        
+        try:
+            # Check folder modification time
+            mtime = datetime.utcfromtimestamp(os.path.getmtime(folder_path))
+            if mtime < cutoff:
+                shutil.rmtree(folder_path)
+                cleaned += 1
+        except Exception:
+            pass
+    
+    return cleaned
+
+
+# ============================================================================
+# Rate Limiting
+# ============================================================================
+def check_rate_limit(client_ip: str) -> bool:
+    """Check if client has exceeded rate limit. Returns True if allowed."""
+    now = datetime.utcnow()
+    window_start = now - timedelta(seconds=RATE_LIMIT_WINDOW)
+    
+    # Clean old entries
+    rate_limit_store[client_ip] = [
+        ts for ts in rate_limit_store[client_ip] if ts > window_start
+    ]
+    
+    if len(rate_limit_store[client_ip]) >= RATE_LIMIT_MAX:
+        return False
+    
+    rate_limit_store[client_ip].append(now)
+    return True
+
+
+# ============================================================================
+# Pydantic Models
+# ============================================================================
+class RunConfig(BaseModel):
+    """Configuration for a custom analysis run."""
+    task_prompt: Optional[str] = Field(
+        None, 
+        description="Custom task prompt. If None, uses default RCA scenario."
+    )
+    model: str = Field(
+        "llama3-8b-8192",
+        description="LLM model to use"
+    )
+    temperature: float = Field(
+        0.7,
+        ge=0.0,
+        le=1.0,
+        description="LLM temperature (0.0 = deterministic, 1.0 = creative)"
+    )
+    anomaly_count: int = Field(
+        5,
+        ge=1,
+        le=10,
+        description="Number of anomaly spikes to inject in data"
+    )
+    agent_mode: str = Field(
+        "standard",
+        description="Agent verbosity: standard, detailed, or concise"
+    )
+
+
+class RunResponse(BaseModel):
+    run_id: str
+    status: str
+    message: str
+
+
+class ConfigResponse(BaseModel):
+    models: list
+    agent_modes: list
+    defaults: dict
+
+
+# ============================================================================
+# Workflow Runner
+# ============================================================================
+def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
     """Run workflow synchronously and record result. Pushes messages to queue for SSE."""
     q = RUN_QUEUES.get(run_id)
     start_time = datetime.utcnow()
@@ -50,14 +175,18 @@ def _run_sync(work_dir: str, run_id: str) -> None:
             q.put({
                 "type": "phase_change",
                 "phase": "initializing",
-                "message": "Initializing agents...",
+                "message": f"Initializing agents (model: {config.model})...",
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             })
         
         result = run_workflow(
-            task_prompt=DEFAULT_TASK_PROMPT,
+            task_prompt=config.task_prompt,
             work_dir=work_dir,
             on_message=on_message,
+            model=config.model,
+            temperature=config.temperature,
+            anomaly_count=config.anomaly_count,
+            agent_mode=config.agent_mode,
         )
         
         end_time = datetime.utcnow()
@@ -80,7 +209,21 @@ def _run_sync(work_dir: str, run_id: str) -> None:
             "completed_at": end_time.isoformat() + "Z",
             "duration_ms": duration_ms,
             "messages": result.get("messages", []),
+            "config": config.model_dump(),
         }
+        
+        # Save to database
+        save_run(
+            run_id=run_id,
+            status="completed",
+            config=config.model_dump(),
+            started_at=start_time.isoformat() + "Z",
+            completed_at=end_time.isoformat() + "Z",
+            duration_ms=duration_ms,
+            artifact_report=result["artifact_report"],
+            artifact_plot=result["artifact_plot"],
+        )
+        
     except Exception as e:
         if q:
             q.put({
@@ -89,34 +232,56 @@ def _run_sync(work_dir: str, run_id: str) -> None:
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             })
+        
         RUNS[run_id] = {
             "status": "failed",
             "error": str(e),
             "started_at": start_time.isoformat() + "Z",
             "failed_at": datetime.utcnow().isoformat() + "Z",
+            "config": config.model_dump(),
         }
+        
+        # Save failure to database
+        save_run(
+            run_id=run_id,
+            status="failed",
+            config=config.model_dump(),
+            started_at=start_time.isoformat() + "Z",
+            error=str(e),
+        )
 
 
+# ============================================================================
+# FastAPI App
+# ============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_env()
+    # Cleanup old workspaces on startup
+    cleanup_old_workspaces()
     yield
     # cleanup if any
 
 
 app = FastAPI(
     title="CognitionFlow API",
-    description="Multi-agent RCA pipeline: trigger analysis and retrieve artifacts.",
+    description="Multi-agent RCA pipeline with user customization. Trigger analysis and retrieve artifacts.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
+# CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class RunResponse(BaseModel):
-    run_id: str
-    status: str
-    message: str
 
-
+# ============================================================================
+# API Endpoints
+# ============================================================================
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Minimal web UI: run analysis and view report/plot."""
@@ -126,14 +291,55 @@ def index():
 @app.get("/health")
 def health():
     """Liveness check."""
-    return {"status": "ok"}
+    return {"status": "ok", "concurrent_limit": MAX_CONCURRENT_RUNS}
+
+
+@app.get("/config", response_model=ConfigResponse)
+def get_config_options():
+    """Get available configuration options for runs."""
+    return ConfigResponse(
+        models=AVAILABLE_MODELS,
+        agent_modes=AGENT_MODES,
+        defaults={
+            "model": "llama3-8b-8192",
+            "temperature": 0.7,
+            "anomaly_count": 5,
+            "agent_mode": "standard",
+        }
+    )
 
 
 @app.post("/run", response_model=RunResponse)
-def run_analysis(background_tasks: BackgroundTasks):
+async def run_analysis(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    config: RunConfig = None,
+):
     """
-    Start the RCA workflow. Runs in background; use GET /runs/{run_id}/stream for SSE or GET /runs/{run_id} for status.
+    Start the RCA workflow with optional custom configuration.
+    Runs in background; use GET /runs/{run_id}/stream for SSE or GET /runs/{run_id} for status.
     """
+    # Rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429, 
+            detail=f"Rate limit exceeded. Max {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW}s."
+        )
+    
+    # Check concurrent run limit
+    if run_semaphore.locked():
+        active_count = MAX_CONCURRENT_RUNS - run_semaphore._value
+        if active_count >= MAX_CONCURRENT_RUNS:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Server busy. Max {MAX_CONCURRENT_RUNS} concurrent runs. Please try again."
+            )
+    
+    # Cleanup old workspaces on each run request
+    cleanup_old_workspaces()
+    
+    config = config or RunConfig()
     run_id = str(uuid.uuid4())
     base_dir = get_workspace_dir()
     work_dir = os.path.join(base_dir, run_id)
@@ -148,9 +354,27 @@ def run_analysis(background_tasks: BackgroundTasks):
         "started_at": datetime.utcnow().isoformat() + "Z",
         "messages": [],
         "current_phase": "initializing",
+        "config": config.model_dump(),
     }
     
-    background_tasks.add_task(_run_sync, work_dir, run_id)
+    # Save initial run state
+    save_run(
+        run_id=run_id,
+        status="running",
+        config=config.model_dump(),
+        started_at=datetime.utcnow().isoformat() + "Z",
+    )
+    
+    async def run_with_semaphore():
+        async with run_semaphore:
+            # Run in thread pool to avoid blocking
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                await asyncio.get_event_loop().run_in_executor(
+                    executor, _run_sync, work_dir, run_id, config
+                )
+    
+    background_tasks.add_task(lambda: asyncio.run(run_with_semaphore()))
 
     return RunResponse(
         run_id=run_id,
@@ -260,12 +484,32 @@ def get_server_health_plot(run_id: str):
     return FileResponse(path, media_type="image/png")
 
 
+@app.get("/history")
+def get_history(limit: int = 20, offset: int = 0):
+    """Get run history with pagination."""
+    return {
+        "runs": get_run_history(limit=limit, offset=offset),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/metrics")
+def get_metrics():
+    """Get aggregate metrics."""
+    return db_get_metrics()
+
+
+# ============================================================================
+# Frontend HTML with Customization Panel
+# ============================================================================
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CognitionFlow - Multi-Agent RCA Pipeline</title>
+  <meta name="description" content="CognitionFlow: A multi-agent AI system for automated server health analysis using Microsoft AutoGen and Groq LPU.">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
@@ -368,7 +612,131 @@ _INDEX_HTML = """<!DOCTYPE html>
     }
     .run-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4); }
     .run-btn:disabled { background: #475569; cursor: not-allowed; transform: none; box-shadow: none; }
-    /* Fixed Alignment for Conversation */
+    
+    /* Customization Panel */
+    .config-panel {
+      margin: 1.5rem 0;
+      padding: 1.5rem;
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 12px;
+      text-align: left;
+    }
+    .config-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      padding-bottom: 0.5rem;
+    }
+    .config-header h3 {
+      color: #f1f5f9;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .config-toggle {
+      color: #60a5fa;
+      font-size: 1.2rem;
+      transition: transform 0.2s;
+    }
+    .config-toggle.open {
+      transform: rotate(180deg);
+    }
+    .config-body {
+      display: none;
+      padding-top: 1rem;
+    }
+    .config-body.active {
+      display: block;
+    }
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+    .form-group label {
+      display: block;
+      color: #cbd5e1;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      padding: 0.75rem;
+      color: #e2e8f0;
+      font-size: 0.95rem;
+    }
+    .form-group textarea {
+      min-height: 100px;
+      resize: vertical;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.85rem;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      outline: none;
+      border-color: #60a5fa;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .slider-container input[type="range"] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 6px;
+      background: rgba(148, 163, 184, 0.3);
+      border-radius: 3px;
+    }
+    .slider-container input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .slider-value {
+      color: #60a5fa;
+      font-weight: 600;
+      min-width: 40px;
+      text-align: right;
+    }
+    .radio-group {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .radio-option:hover {
+      border-color: rgba(59, 130, 246, 0.5);
+    }
+    .radio-option.selected {
+      border-color: #60a5fa;
+      background: rgba(59, 130, 246, 0.2);
+    }
+    .radio-option input {
+      display: none;
+    }
+    
+    /* Conversation Panel */
     .conversation-panel {
       max-height: 500px;
       overflow-y: auto;
@@ -377,7 +745,7 @@ _INDEX_HTML = """<!DOCTYPE html>
       padding: 1.5rem;
       margin-top: 1rem;
       display: none;
-      text-align: left; /* Verify left alignment */
+      text-align: left;
     }
     .conversation-panel.active {
       display: block;
@@ -419,7 +787,6 @@ _INDEX_HTML = """<!DOCTYPE html>
       line-height: 1.6;
       word-wrap: break-word;
     }
-    /* Markdown Styles */
     .message-content p { margin-bottom: 0.75rem; }
     .message-content ul, .message-content ol { margin-left: 1.5rem; margin-bottom: 0.75rem; }
     .message-content code {
@@ -443,12 +810,9 @@ _INDEX_HTML = """<!DOCTYPE html>
       padding: 0;
       color: inherit;
     }
-
-    /* Code syntax highlighting */
     .keyword { color: #c678dd; }
     .number { color: #d19a66; }
     .string { color: #98c379; }
-
     .status-box {
       margin-top: 1.5rem;
       padding: 1rem;
@@ -584,6 +948,9 @@ _INDEX_HTML = """<!DOCTYPE html>
       0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
       30% { transform: translateY(-10px); opacity: 1; }
     }
+    @media (max-width: 640px) {
+      .form-row { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -611,12 +978,12 @@ _INDEX_HTML = """<!DOCTYPE html>
           <p>Microsoft AutoGen powers agent collaboration and code execution</p>
         </div>
         <div class="feature">
-          <h3>Automated Analysis</h3>
-          <p>Generates server logs, detects anomalies, creates visualizations</p>
+          <h3>Customizable Analysis</h3>
+          <p>Configure prompts, models, temperature, and anomaly patterns</p>
         </div>
         <div class="feature">
           <h3>Production-Ready</h3>
-          <p>FastAPI backend, async processing, containerized deployment</p>
+          <p>Rate limiting, SQLite history, memory optimization for cloud</p>
         </div>
       </div>
       <div class="tech-stack">
@@ -627,12 +994,82 @@ _INDEX_HTML = """<!DOCTYPE html>
         <span class="tech-badge">Seaborn</span>
         <span class="tech-badge">Groq LPU</span>
         <span class="tech-badge">Docker</span>
+        <span class="tech-badge">SQLite</span>
       </div>
     </div>
 
     <div class="card run-section">
       <h2>Run Analysis</h2>
-      <p>Click below to trigger the multi-agent workflow. Watch the agents collaborate in real-time below.</p>
+      <p>Configure your analysis below, then click to start. Watch the agents collaborate in real-time.</p>
+      
+      <!-- Customization Panel -->
+      <div class="config-panel">
+        <div class="config-header" id="configToggle">
+          <h3>⚙️ Advanced Options</h3>
+          <span class="config-toggle" id="configArrow">▼</span>
+        </div>
+        <div class="config-body" id="configBody">
+          <div class="form-group">
+            <label>Custom Task Prompt (leave empty for default RCA scenario)</label>
+            <textarea id="taskPrompt" placeholder="**Mission:** Your custom analysis task...
+
+**Tasks:**
+1. First task...
+2. Second task...
+
+**Constraints:**
+- Use Polars and Seaborn"></textarea>
+          </div>
+          
+          <div class="form-row">
+            <div class="form-group">
+              <label>LLM Model</label>
+              <select id="modelSelect">
+                <option value="llama3-8b-8192">Llama 3 8B (Fast)</option>
+                <option value="llama3-70b-8192">Llama 3 70B (Capable)</option>
+                <option value="mixtral-8x7b-32768">Mixtral 8x7B (Balanced)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Anomaly Count</label>
+              <select id="anomalySelect">
+                <option value="3">3 anomalies</option>
+                <option value="5" selected>5 anomalies</option>
+                <option value="7">7 anomalies</option>
+                <option value="10">10 anomalies</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label>Temperature: <span id="tempValue">0.7</span></label>
+            <div class="slider-container">
+              <span style="color: #64748b; font-size: 0.8rem;">Deterministic</span>
+              <input type="range" id="tempSlider" min="0" max="1" step="0.1" value="0.7">
+              <span style="color: #64748b; font-size: 0.8rem;">Creative</span>
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label>Agent Mode</label>
+            <div class="radio-group" id="agentModeGroup">
+              <label class="radio-option selected">
+                <input type="radio" name="agentMode" value="standard" checked>
+                <span>Standard</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="agentMode" value="detailed">
+                <span>Detailed</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="agentMode" value="concise">
+                <span>Concise</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+      
       <button id="runBtn" class="run-btn" type="button">Start Analysis</button>
       <div id="status" class="status-box"></div>
       
@@ -671,7 +1108,7 @@ sequenceDiagram
     participant Eng as Senior_Engineer
     participant LLM as Groq LLM
     
-    Browser->>FastAPI: POST /run
+    Browser->>FastAPI: POST /run {config}
     FastAPI-->>Browser: run_id
     Browser->>FastAPI: GET /runs/{id}/stream (SSE)
     
@@ -693,32 +1130,13 @@ sequenceDiagram
     FastAPI-->>Browser: SSE: Complete
         </div>
         
-        <h3 style="color: #f1f5f9; margin-top: 2rem; margin-bottom: 1rem;">Agent Roles</h3>
-        <div style="display: grid; gap: 1rem;">
-          <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px;">
-            <h4 style="color: #60a5fa; margin-bottom: 0.5rem;">Product Manager</h4>
-            <p style="color: #94a3b8; font-size: 0.9rem;">
-              Orchestrates the workflow, executes generated code, validates results, and manages the conversation flow.
-              Uses AutoGen's UserProxyAgent to handle code execution in a sandboxed environment.
-            </p>
-          </div>
-          <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px;">
-            <h4 style="color: #a78bfa; margin-bottom: 0.5rem;">Senior Engineer</h4>
-            <p style="color: #94a3b8; font-size: 0.9rem;">
-              Generates Python code using Polars for data manipulation and Seaborn for visualization.
-              Communicates with Groq LLM to produce production-ready code that solves the RCA task.
-            </p>
-          </div>
-        </div>
-        
-        <h3 style="color: #f1f5f9; margin-top: 2rem; margin-bottom: 1rem;">Tech Stack</h3>
+        <h3 style="color: #f1f5f9; margin-top: 2rem; margin-bottom: 1rem;">v2.0 Features</h3>
         <ul style="color: #94a3b8; line-height: 2;">
-          <li><strong style="color: #e2e8f0;">Microsoft AutoGen</strong>: Multi-agent orchestration framework</li>
-          <li><strong style="color: #e2e8f0;">Groq LPU</strong>: Low-latency LLM inference (GPT-compatible)</li>
-          <li><strong style="color: #e2e8f0;">FastAPI</strong>: Async Python web framework</li>
-          <li><strong style="color: #e2e8f0;">Server-Sent Events (SSE)</strong>: Real-time message streaming</li>
-          <li><strong style="color: #e2e8f0;">Polars</strong>: High-performance DataFrame library</li>
-          <li><strong style="color: #e2e8f0;">Seaborn</strong>: Statistical visualization library</li>
+          <li><strong style="color: #e2e8f0;">User Customization</strong>: Configure task prompts, models, temperature, and anomaly patterns</li>
+          <li><strong style="color: #e2e8f0;">Memory Optimization</strong>: Concurrent run limiter, workspace cleanup, Agg backend</li>
+          <li><strong style="color: #e2e8f0;">Rate Limiting</strong>: 10 requests per minute per IP</li>
+          <li><strong style="color: #e2e8f0;">Run History</strong>: SQLite-backed persistence with /history endpoint</li>
+          <li><strong style="color: #e2e8f0;">Metrics</strong>: /metrics endpoint for success rates and performance stats</li>
         </ul>
       </div>
     </div>
@@ -736,7 +1154,39 @@ sequenceDiagram
     const howItWorksBtn = document.getElementById('howItWorksBtn');
     const modal = document.getElementById('modal');
     const closeModal = document.getElementById('closeModal');
+    
+    // Config panel elements
+    const configToggle = document.getElementById('configToggle');
+    const configBody = document.getElementById('configBody');
+    const configArrow = document.getElementById('configArrow');
+    const taskPrompt = document.getElementById('taskPrompt');
+    const modelSelect = document.getElementById('modelSelect');
+    const anomalySelect = document.getElementById('anomalySelect');
+    const tempSlider = document.getElementById('tempSlider');
+    const tempValue = document.getElementById('tempValue');
+    const agentModeGroup = document.getElementById('agentModeGroup');
+    
     let eventSource = null;
+
+    // Config panel toggle
+    configToggle.addEventListener('click', function() {
+      configBody.classList.toggle('active');
+      configArrow.classList.toggle('open');
+    });
+    
+    // Temperature slider
+    tempSlider.addEventListener('input', function() {
+      tempValue.textContent = this.value;
+    });
+    
+    // Agent mode radio buttons
+    agentModeGroup.querySelectorAll('.radio-option').forEach(option => {
+      option.addEventListener('click', function() {
+        agentModeGroup.querySelectorAll('.radio-option').forEach(o => o.classList.remove('selected'));
+        this.classList.add('selected');
+        this.querySelector('input').checked = true;
+      });
+    });
 
     function setStatus(msg, type) {
       status.textContent = msg;
@@ -755,7 +1205,6 @@ sequenceDiagram
       return div.innerHTML;
     }
 
-    // Configure marked with syntax highlighting
     marked.use({
       renderer: {
         code(code, language) {
@@ -766,13 +1215,9 @@ sequenceDiagram
     });
 
     function highlightCode(code) {
-      // Simple Python syntax highlighting
-      // Note: marked passes the code content. We need to escape it first but we are returning HTML.
-      // Actually, marked expects plain text or HTML? 
-      // The custom renderer returns HTML.
       return escapeHtml(code)
-        .replace(/(import|from|def|class|if|elif|else|for|while|return|try|except|with|as|in|and|or|not|True|False|None)\b/g, '<span class="keyword">$1</span>')
-        .replace(/(\b\d+\.?\d*\b)/g, '<span class="number">$1</span>')
+        .replace(/(import|from|def|class|if|elif|else|for|while|return|try|except|with|as|in|and|or|not|True|False|None)\\b/g, '<span class="keyword">$1</span>')
+        .replace(/(\\b\\d+\\.?\\d*\\b)/g, '<span class="number">$1</span>')
         .replace(/(".*?"|'.*?')/g, '<span class="string">$1</span>');
     }
 
@@ -785,9 +1230,6 @@ sequenceDiagram
       const badgeClass = isPM ? 'badge-pm' : 'badge-eng';
       const badgeText = isPM ? 'Product Manager' : 'Senior Engineer';
       
-      // Use marked to parse content
-      // Note: msgData.content contains the full message including code blocks.
-      // marked deals with them correctly.
       let contentHtml = marked.parse(msgData.content || '');
       
       msgDiv.innerHTML = `
@@ -859,15 +1301,32 @@ sequenceDiagram
       });
     }
 
+    function getConfig() {
+      const selectedMode = agentModeGroup.querySelector('input:checked');
+      return {
+        task_prompt: taskPrompt.value.trim() || null,
+        model: modelSelect.value,
+        temperature: parseFloat(tempSlider.value),
+        anomaly_count: parseInt(anomalySelect.value),
+        agent_mode: selectedMode ? selectedMode.value : 'standard'
+      };
+    }
+
     runBtn.addEventListener('click', async function() {
       runBtn.disabled = true;
       links.innerHTML = '';
       messages.innerHTML = '';
       conversation.classList.remove('active');
-      setStatus('Initializing agents...');
+      
+      const config = getConfig();
+      setStatus(`Initializing agents (${config.model})...`);
       
       try {
-        const r = await fetch(window.location.origin + '/run', { method: 'POST' });
+        const r = await fetch(window.location.origin + '/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
         const data = await r.json();
         if (!r.ok) {
           setStatus('Error: ' + (data.detail || r.status), 'error');

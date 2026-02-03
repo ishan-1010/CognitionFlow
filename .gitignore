@@ -13,6 +13,7 @@ restarted.txt
 # Workspace and artifacts
 project_workspace/
 tmp/
+data/
 *.pyc
 __pycache__/
 .ipynb_checkpoints/
