@@ -45,7 +45,7 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 | Feature | Description |
 |---------|-------------|
 | **Multi-Agent Architecture** | Explicit role assignment using the AutoGen framework |
-| **Customizable Analysis** | Configure prompts, models (Llama 3, Mixtral), temperature, anomaly patterns |
+| **Customizable Analysis** | Configure prompts, models, temperature, anomaly patterns with UI tooltips |
 | **Memory Optimized** | Concurrent run limiter (2 max), workspace cleanup, Agg backend |
 | **Production Ready** | Rate limiting (10 req/min), SQLite history, /metrics endpoint |
 | **Real-time Streaming** | Server-Sent Events for live agent conversation |
@@ -56,7 +56,7 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 
 * **Core:** Python 3.10+, FastAPI, SQLite
 * **Orchestration:** Microsoft AutoGen
-* **Inference:** Groq LPU (Llama 3, Mixtral)
+* **Inference:** Groq LPU (Llama 3.3, Llama 3.1, Qwen, GPT-OSS)
 * **Data/Viz:** Polars, Seaborn, Matplotlib
 * **Deployment:** Docker, Render-optimized
 
@@ -80,14 +80,14 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 ```json
 {
   "task_prompt": "Custom analysis prompt...",
-  "model": "llama3-8b-8192",
+  "model": "llama-3.1-8b-instant",
   "temperature": 0.7,
   "anomaly_count": 5,
   "agent_mode": "standard"
 }
 ```
 
-Available models: `llama3-8b-8192`, `llama3-70b-8192`, `mixtral-8x7b-32768`
+Available models: `llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, `openai/gpt-oss-120b`, `qwen/qwen3-32b`
 Agent modes: `standard`, `detailed`, `concise`
 
 ---
