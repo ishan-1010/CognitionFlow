@@ -118,7 +118,7 @@ class RunConfig(BaseModel):
         description="Custom task prompt. If None, uses default RCA scenario."
     )
     model: str = Field(
-        "llama3-8b-8192",
+        "llama-3.1-8b-instant",
         description="LLM model to use"
     )
     temperature: float = Field(
@@ -301,7 +301,7 @@ def get_config_options():
         models=AVAILABLE_MODELS,
         agent_modes=AGENT_MODES,
         defaults={
-            "model": "llama3-8b-8192",
+            "model": "llama-3.1-8b-instant",
             "temperature": 0.7,
             "anomaly_count": 5,
             "agent_mode": "standard",
@@ -736,6 +736,59 @@ _INDEX_HTML = """<!DOCTYPE html>
       display: none;
     }
     
+    /* Tooltips */
+    .help-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      background: rgba(148, 163, 184, 0.2);
+      color: #94a3b8;
+      border-radius: 50%;
+      font-size: 0.7rem;
+      font-weight: bold;
+      margin-left: 0.5rem;
+      cursor: help;
+      position: relative;
+    }
+    .help-icon:hover {
+      background: #60a5fa;
+      color: white;
+    }
+    .help-icon:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 150%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      z-index: 100;
+      width: max-content;
+      max-width: 250px;
+      white-space: normal;
+      text-align: center;
+      line-height: 1.4;
+    }
+    .help-icon:hover::before {
+      content: '';
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border-width: 6px;
+      border-style: solid;
+      border-color: #0f172a transparent transparent transparent;
+      z-index: 100;
+    }
+    
     /* Conversation Panel */
     .conversation-panel {
       max-height: 500px;
@@ -1010,7 +1063,10 @@ _INDEX_HTML = """<!DOCTYPE html>
         </div>
         <div class="config-body" id="configBody">
           <div class="form-group">
-            <label>Custom Task Prompt (leave empty for default RCA scenario)</label>
+            <label>
+              Custom Task Prompt
+              <span class="help-icon" data-tooltip="Define specific scenarios or problems for the agents to solve. Use markdown for structure.">?</span>
+            </label>
             <textarea id="taskPrompt" placeholder="**Mission:** Your custom analysis task...
 
 **Tasks:**
@@ -1023,15 +1079,22 @@ _INDEX_HTML = """<!DOCTYPE html>
           
           <div class="form-row">
             <div class="form-group">
-              <label>LLM Model</label>
+              <label>
+                LLM Model
+                <span class="help-icon" data-tooltip="Select the AI model. 70B models are smarter but slower. 8B models are faster.">?</span>
+              </label>
               <select id="modelSelect">
-                <option value="llama3-8b-8192">Llama 3 8B (Fast)</option>
-                <option value="llama3-70b-8192">Llama 3 70B (Capable)</option>
-                <option value="mixtral-8x7b-32768">Mixtral 8x7B (Balanced)</option>
+                <option value="llama-3.1-8b-instant" selected>Llama 3.1 8B (Fast)</option>
+                <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Capable)</option>
+                <option value="openai/gpt-oss-120b">GPT-OSS 120B (Reasoning)</option>
+                <option value="qwen/qwen3-32b">Qwen 3 32B (Open)</option>
               </select>
             </div>
             <div class="form-group">
-              <label>Anomaly Count</label>
+              <label>
+                Anomaly Count
+                <span class="help-icon" data-tooltip="Number of simulated error spikes to inject into the generated server logs.">?</span>
+              </label>
               <select id="anomalySelect">
                 <option value="3">3 anomalies</option>
                 <option value="5" selected>5 anomalies</option>
@@ -1042,7 +1105,10 @@ _INDEX_HTML = """<!DOCTYPE html>
           </div>
           
           <div class="form-group">
-            <label>Temperature: <span id="tempValue">0.7</span></label>
+            <label>
+              Temperature: <span id="tempValue">0.7</span>
+              <span class="help-icon" data-tooltip="Controls randomness. 0.0 is deterministic (fact-based), 1.0 is creative (varied).">?</span>
+            </label>
             <div class="slider-container">
               <span style="color: #64748b; font-size: 0.8rem;">Deterministic</span>
               <input type="range" id="tempSlider" min="0" max="1" step="0.1" value="0.7">
@@ -1051,7 +1117,10 @@ _INDEX_HTML = """<!DOCTYPE html>
           </div>
           
           <div class="form-group">
-            <label>Agent Mode</label>
+            <label>
+              Agent Mode
+              <span class="help-icon" data-tooltip="Controls the verbosity and style of the agents. Standard is balanced, Detailed adds explanations.">?</span>
+            </label>
             <div class="radio-group" id="agentModeGroup">
               <label class="radio-option selected">
                 <input type="radio" name="agentMode" value="standard" checked>

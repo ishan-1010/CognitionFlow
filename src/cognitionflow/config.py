@@ -60,9 +60,10 @@ def get_workspace_dir() -> str:
 
 # Available models for user selection
 AVAILABLE_MODELS = [
-    {"id": "llama3-8b-8192", "name": "Llama 3 8B", "description": "Fast, efficient"},
-    {"id": "llama3-70b-8192", "name": "Llama 3 70B", "description": "Most capable"},
-    {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "description": "Balanced"},
+    {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B", "description": "Most capable & versatile"},
+    {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B", "description": "Fastest response"},
+    {"id": "openai/gpt-oss-120b", "name": "GPT-OSS 120B", "description": "High reasoning capability"},
+    {"id": "qwen/qwen3-32b", "name": "Qwen 3 32B", "description": "Strong open model"},
 ]
 
 AGENT_MODES = [
