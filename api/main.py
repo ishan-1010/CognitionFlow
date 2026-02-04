@@ -32,7 +32,8 @@ if _src not in sys.path:
 
 from cognitionflow.config import (
     load_env, get_workspace_dir, 
-    AVAILABLE_MODELS, AGENT_MODES
+    AVAILABLE_MODELS, AGENT_MODES,
+    TASK_TEMPLATES, OUTPUT_FORMATS, get_config_with_overrides
 )
 from cognitionflow.orchestration import run_workflow, DEFAULT_TASK_PROMPT
 
@@ -113,30 +114,23 @@ def check_rate_limit(client_ip: str) -> bool:
 # ============================================================================
 class RunConfig(BaseModel):
     """Configuration for a custom analysis run."""
-    task_prompt: Optional[str] = Field(
-        None, 
-        description="Custom task prompt. If None, uses default RCA scenario."
-    )
+    task_prompt: Optional[str] = Field(None, description="Custom task prompt or overridden template prompt")
+    template_id: str = Field("data_analysis", description="ID of the task template to use")
+    output_format: str = Field("markdown", description="Desired output format (markdown, json, code, plot, auto)")
+    
     model: str = Field(
         "llama-3.1-8b-instant",
         description="LLM model to use"
     )
     temperature: float = Field(
-        0.7,
-        ge=0.0,
-        le=1.0,
+        0.7, 
+        ge=0.0, 
+        le=1.0, 
         description="LLM temperature (0.0 = deterministic, 1.0 = creative)"
     )
-    anomaly_count: int = Field(
-        5,
-        ge=1,
-        le=10,
-        description="Number of anomaly spikes to inject in data"
-    )
-    agent_mode: str = Field(
-        "standard",
-        description="Agent verbosity: standard, detailed, or concise"
-    )
+    # Keeping anomaly_count for backward compatibility with old 'data_analysis' template
+    anomaly_count: int = Field(5, ge=1, le=10, description="Number of items/anomalies (if applicable)")
+    agent_mode: str = Field("standard", description="Agent verbosity: standard, detailed, or concise")
 
 
 class RunResponse(BaseModel):
@@ -146,8 +140,10 @@ class RunResponse(BaseModel):
 
 
 class ConfigResponse(BaseModel):
-    models: list
-    agent_modes: list
+    models: List[dict]
+    agent_modes: List[dict]
+    task_templates: List[dict]
+    output_formats: List[dict]
     defaults: dict
 
 
@@ -179,15 +175,30 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             })
         
-        result = run_workflow(
-            task_prompt=config.task_prompt,
-            work_dir=work_dir,
-            on_message=on_message,
-            model=config.model,
-            temperature=config.temperature,
-            anomaly_count=config.anomaly_count,
-            agent_mode=config.agent_mode,
-        )
+        args = {
+            "task_prompt": config.task_prompt,
+            "work_dir": work_dir,
+            "on_message": on_message,
+            "model": config.model,
+            "temperature": config.temperature,
+            "anomaly_count": config.anomaly_count, # Passed but may be ignored by generic templates
+            "agent_mode": config.agent_mode,
+            "template_id": config.template_id,
+            "output_format": config.output_format,
+        }
+        
+        # If using a specific template (and not overridden prompt), we might fetch prompts here
+        # But run_workflow handles template lookups if task_prompt is None
+        if config.template_id and not config.task_prompt:
+            # If the user selected a template but didn't customize the prompt,
+            # we let run_workflow handle fetching the template prompt. 
+            # But we need to pass the template ID if we wanted orchestration to handle it.
+            # However, our updated orchestration.py just takes task_prompt.
+            # So let's fetch it here if needed, or update orchestration to take template_id.
+            # Strategy: Fetch generic prompt here to pass as task_prompt if null.
+            args["task_prompt"] = get_template_prompt(config.template_id)
+            
+        result = run_workflow(**args)
         
         end_time = datetime.utcnow()
         duration_ms = int((end_time - start_time).total_seconds() * 1000)

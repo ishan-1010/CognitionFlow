@@ -67,9 +67,107 @@ AVAILABLE_MODELS = [
 ]
 
 AGENT_MODES = [
-    {"id": "standard", "name": "Standard", "description": "Balanced output"},
-    {"id": "detailed", "name": "Detailed", "description": "Verbose explanations"},
-    {"id": "concise", "name": "Concise", "description": "Minimal, fast"},
+    {"id": "standard", "name": "Standard", "description": "Balanced output with code + brief context"},
+    {"id": "detailed", "name": "Detailed", "description": "Verbose with explanations and comments"},
+    {"id": "concise", "name": "Concise", "description": "Minimal output, code only"},
+]
+
+# Pre-built task templates for generalized agent
+TASK_TEMPLATES = [
+    {
+        "id": "data_analysis",
+        "name": "📊 Data Analysis",
+        "description": "Analyze a dataset, find patterns, create visualizations",
+        "prompt": """**Mission:** Perform data analysis on a synthetic dataset.
+
+**Tasks:**
+1. **Data Generation:** Create a sample dataset with 1,000 rows containing realistic business metrics (dates, values, categories).
+2. **Analysis:** Calculate key statistics, identify trends, and detect any anomalies.
+3. **Visualization:** Create an informative plot saved as 'analysis_chart.png'.
+4. **Report:** Write findings to 'analysis_report.md' with insights and recommendations.
+
+**Libraries:** Use Polars for data manipulation, Seaborn/Matplotlib for visualization.""",
+        "output_files": ["analysis_chart.png", "analysis_report.md"],
+    },
+    {
+        "id": "code_generator",
+        "name": "💻 Code Generator",
+        "description": "Generate Python code based on a specification",
+        "prompt": """**Mission:** Generate a well-structured Python utility module.
+
+**Tasks:**
+1. **Create Module:** Build a Python file 'utils.py' with useful utility functions.
+2. **Include:**
+   - A function for data validation
+   - A function for file handling
+   - A function for logging
+3. **Documentation:** Add docstrings and type hints to all functions.
+4. **Report:** Write 'code_summary.md' explaining the module's capabilities.
+
+**Requirements:** Clean, PEP 8 compliant code with proper error handling.""",
+        "output_files": ["utils.py", "code_summary.md"],
+    },
+    {
+        "id": "report_generator",
+        "name": "📝 Report Generator",
+        "description": "Generate a structured Markdown report",
+        "prompt": """**Mission:** Create a comprehensive business analysis report.
+
+**Tasks:**
+1. **Generate Data:** Create sample quarterly business data.
+2. **Analysis:** Analyze revenue trends, growth rates, and key metrics.
+3. **Report:** Write a detailed Markdown report 'business_report.md' including:
+   - Executive Summary
+   - Key Metrics
+   - Trend Analysis
+   - Recommendations
+4. **Visualization:** Create a supporting chart 'metrics_chart.png'.
+
+**Format:** Professional business report style with tables and bullet points.""",
+        "output_files": ["business_report.md", "metrics_chart.png"],
+    },
+    {
+        "id": "web_scraper",
+        "name": "🌐 Web Scraper",
+        "description": "Scrape and analyze web content (simulated)",
+        "prompt": """**Mission:** Simulate web scraping and data extraction.
+
+**Tasks:**
+1. **Simulate Scraping:** Create a realistic scraped dataset (news headlines, prices, or product info).
+2. **Data Cleaning:** Clean and structure the extracted data.
+3. **Analysis:** Analyze patterns in the scraped data.
+4. **Output:** Save structured data to 'scraped_data.json' and summary to 'scraping_report.md'.
+
+**Note:** Since we cannot access live URLs, simulate realistic scraped content.""",
+        "output_files": ["scraped_data.json", "scraping_report.md"],
+    },
+    {
+        "id": "api_builder",
+        "name": "🔧 API Builder",
+        "description": "Generate a FastAPI endpoint skeleton",
+        "prompt": """**Mission:** Create a FastAPI application skeleton.
+
+**Tasks:**
+1. **Create API:** Build 'api_app.py' with a FastAPI application including:
+   - Health check endpoint
+   - CRUD endpoints for a sample resource
+   - Pydantic models for validation
+   - A function for logging
+2. **Documentation:** Write 'api_docs.md' explaining the endpoints.
+3. **Requirements:** Generate 'requirements.txt' for the API.
+
+**Requirements:** Production-ready code with proper error handling and validation.""",
+        "output_files": ["api_app.py", "api_docs.md", "requirements.txt"],
+    },
+]
+
+# Output format options
+OUTPUT_FORMATS = [
+    {"id": "markdown", "name": "Markdown", "description": "Structured text report (.md)"},
+    {"id": "json", "name": "JSON", "description": "Structured data output (.json)"},
+    {"id": "code", "name": "Code", "description": "Python source file (.py)"},
+    {"id": "plot", "name": "Visualization", "description": "Chart/plot image (.png)"},
+    {"id": "auto", "name": "Auto", "description": "Let agent decide based on task"},
 ]
 
 

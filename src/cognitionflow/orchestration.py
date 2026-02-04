@@ -1,40 +1,57 @@
 """
-Run the multi-agent RCA workflow: PM -> Engineer -> artifacts.
+Run the multi-agent workflow: PM -> Engineer -> artifacts.
 Lightweight version without vector memory (ChromaDB/sentence-transformers removed).
 Real-time message streaming via callbacks.
+Generalized to support any task, not just server spike analysis.
 """
 import os
 import re
+import glob
 from datetime import datetime
 from typing import Callable, Optional
 
-from cognitionflow.config import get_config, get_workspace_dir, get_config_with_overrides
+from cognitionflow.config import get_config, get_workspace_dir, get_config_with_overrides, TASK_TEMPLATES
 from cognitionflow.agents import build_agents
 
 
-def build_task_prompt(anomaly_count: int = 5) -> str:
+def get_template_prompt(template_id: str) -> str:
+    """Get the prompt for a task template by ID."""
+    for template in TASK_TEMPLATES:
+        if template["id"] == template_id:
+            return template["prompt"]
+    # Default to first template if not found
+    return TASK_TEMPLATES[0]["prompt"] if TASK_TEMPLATES else ""
+
+
+def discover_artifacts(work_dir: str) -> list[dict]:
     """
-    Generate task prompt with configurable anomaly count.
+    Discover all generated artifacts in the work directory.
+    Returns a list of dicts with path, type, and name.
     """
-    return f"""
-**Mission:** Perform a Root Cause Analysis on server instability.
-
-**Tasks:**
-1. **Data Simulation:** Generate 1,000 server logs (Timestamp, Latency, Status). Inject exactly {anomaly_count} distinct 'Spike' anomalies.
-2. **Visualization:** - Create a dark-themed plot ('server_health.png').
-    - Plot Latency vs. Moving Average.
-    - Highlight anomalies in Red.
-3. **Reporting:** - Analyze the data you just generated.
-    - Write a short executive summary to a file named 'incident_report.md'.
-    - Explain WHEN the spikes happened and give a hypothetical reason (e.g., "DB Backup").
-
-**Constraints:**
-- Use the libraries I taught you (Polars/Seaborn).
-- Save both files locally.
-"""
-
-
-DEFAULT_TASK_PROMPT = build_task_prompt(5)
+    artifacts = []
+    extensions = {
+        ".png": "image",
+        ".jpg": "image",
+        ".jpeg": "image",
+        ".md": "markdown",
+        ".json": "json",
+        ".py": "code",
+        ".txt": "text",
+        ".csv": "data",
+        ".html": "html",
+    }
+    
+    for filepath in glob.glob(os.path.join(work_dir, "*")):
+        if os.path.isfile(filepath):
+            ext = os.path.splitext(filepath)[1].lower()
+            file_type = extensions.get(ext, "file")
+            artifacts.append({
+                "path": filepath,
+                "name": os.path.basename(filepath),
+                "type": file_type,
+            })
+    
+    return artifacts
 
 
 def _extract_code_blocks(content: str) -> list[str]:
@@ -113,28 +130,28 @@ def run_workflow(
     on_message: Optional[Callable] = None,
     model: str | None = None,
     temperature: float | None = None,
-    anomaly_count: int = 5,
     agent_mode: str = "standard",
+    # Deprecated but kept for backward compatibility if needed
+    anomaly_count: int = 5,
 ):
     """
     Execute the agent workflow. Creates workspace and agents; runs chat; returns result.
-    Artifacts (server_health.png, incident_report.md) are written under work_dir.
+    Artifacts are discovered dynamically from work_dir.
     
     Args:
-        task_prompt: Task description for agents (uses default if None)
+        task_prompt: Task description for agents (uses default template if None)
         work_dir: Directory for code execution and artifacts
         on_message: Optional callback for real-time message streaming
         model: LLM model override (e.g., 'llama3-8b-8192')
         temperature: LLM temperature override (0.0-1.0)
-        anomaly_count: Number of anomalies to inject (1-10)
         agent_mode: Agent verbosity: 'standard', 'detailed', or 'concise'
     
     Returns:
         dict with result, work_dir, artifacts, and messages
     """
-    # Build task prompt with anomaly count if not custom
-    if task_prompt is None:
-        task_prompt = build_task_prompt(anomaly_count)
+    # Build task prompt if not provided (default to first template)
+    if not task_prompt:
+        task_prompt = get_template_prompt("data_analysis")
     
     work_dir = work_dir or get_workspace_dir()
     os.makedirs(work_dir, exist_ok=True)
@@ -216,10 +233,12 @@ def run_workflow(
         clean_msg = {k: v for k, v in msg.items() if not k.startswith('_')}
         final_messages.append(clean_msg)
 
+    # dynamically discover all created artifacts
+    artifacts = discover_artifacts(work_dir)
+    
     return {
         "result": result,
         "work_dir": work_dir,
-        "artifact_report": os.path.join(work_dir, "incident_report.md"),
-        "artifact_plot": os.path.join(work_dir, "server_health.png"),
+        "artifacts": artifacts, # List of {path, name, type}
         "messages": final_messages,
     }
