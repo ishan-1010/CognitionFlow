@@ -7,7 +7,7 @@
 
 #### Live Link: https://cognitionflow.onrender.com/
 
-**CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems** with persistent vector memory. The project demonstrates how multiple AI agents can collaborate, retain context over time, and generate analytical artifacts through structured orchestration rather than single-prompt interactions.
+**CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems**. The project demonstrates how multiple AI agents can collaborate and generate analytical artifacts through structured orchestration rather than single-prompt interactions. The agent framework is **generalized**: you can run pre-built task types (data analysis, code generation, reports, etc.) or supply custom prompts; outputs are discovered dynamically.
 
 This repository serves as a **systems-level prototype**, focusing on architecture, reasoning flow, and agent coordination using **Microsoft AutoGen**.
 
@@ -15,10 +15,12 @@ This repository serves as a **systems-level prototype**, focusing on architectur
 
 ## 🆕 What's New in v2.0
 
-- **User Customization**: Configure task prompts, LLM models, temperature, anomaly patterns, and agent verbosity
+- **Generalized Agent Framework**: Pre-built task templates (Data Analysis, Code Generator, Report Generator, Web Scraper, API Builder) — not limited to server-spike analysis
+- **User Customization**: Task template + output format selection, optional custom prompts, LLM models, temperature, anomaly patterns, and agent verbosity
+- **Dynamic Artifact Discovery**: Runs discover and expose all generated files (reports, plots, code, JSON) via `/runs/{id}/artifacts/{filename}`
 - **Memory Optimization**: Concurrent run limiter, automatic workspace cleanup, optimized for Render free tier (512MB)
 - **Production Features**: Rate limiting, SQLite run history, /metrics endpoint
-- **Enhanced UI**: Collapsible advanced options panel with real-time configuration
+- **Enhanced UI**: Template selector, output format selector, dynamic result links, collapsible advanced options with tooltips
 
 ---
 
@@ -44,8 +46,10 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 
 | Feature | Description |
 |---------|-------------|
+| **Generalized Agent Framework** | Task-agnostic system prompts; pre-built templates and dynamic artifact discovery |
 | **Multi-Agent Architecture** | Explicit role assignment using the AutoGen framework |
-| **Customizable Analysis** | Configure prompts, models, temperature, anomaly patterns with UI tooltips |
+| **Task Templates & Output Formats** | Choose task type and preferred output (markdown, JSON, code, plot, auto) |
+| **Customizable Analysis** | Configure template, custom prompts, models, temperature, anomaly patterns with UI tooltips |
 | **Memory Optimized** | Concurrent run limiter (2 max), workspace cleanup, Agg backend |
 | **Production Ready** | Rate limiting (10 req/min), SQLite history, /metrics endpoint |
 | **Real-time Streaming** | Server-Sent Events for live agent conversation |
@@ -66,11 +70,14 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Web UI with customization panel |
-| `/config` | GET | Available models, modes, defaults |
+| `/` | GET | Web UI with template selector and customization panel |
+| `/config` | GET | Available models, modes, task templates, output formats, defaults |
 | `/run` | POST | Start analysis with optional config |
-| `/runs/{id}` | GET | Run status and artifacts |
+| `/runs/{id}` | GET | Run status and discovered artifacts list |
 | `/runs/{id}/stream` | GET | SSE real-time messages |
+| `/runs/{id}/artifacts/{filename}` | GET | Serve any discovered artifact by name |
+| `/runs/{id}/incident_report` | GET | Primary report file (backward compat) |
+| `/runs/{id}/server_health.png` | GET | Primary plot (backward compat) |
 | `/history` | GET | Run history (paginated) |
 | `/metrics` | GET | Success rates, avg duration |
 | `/health` | GET | Liveness check |
@@ -79,7 +86,9 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 
 ```json
 {
-  "task_prompt": "Custom analysis prompt...",
+  "task_prompt": "Optional custom prompt (overrides template)",
+  "template_id": "data_analysis",
+  "output_format": "markdown",
   "model": "llama-3.1-8b-instant",
   "temperature": 0.7,
   "anomaly_count": 5,
@@ -87,8 +96,10 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 }
 ```
 
-Available models: `llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, `openai/gpt-oss-120b`, `qwen/qwen3-32b`
-Agent modes: `standard`, `detailed`, `concise`
+- **Task templates:** `data_analysis`, `code_generator`, `report_generator`, `web_scraper`, `api_builder`
+- **Output formats:** `markdown`, `json`, `code`, `plot`, `auto`
+- **Models:** `llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, `openai/gpt-oss-120b`, `qwen/qwen3-32b`
+- **Agent modes:** `standard`, `detailed`, `concise`
 
 ---
 

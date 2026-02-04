@@ -15,7 +15,7 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -35,7 +35,7 @@ from cognitionflow.config import (
     AVAILABLE_MODELS, AGENT_MODES,
     TASK_TEMPLATES, OUTPUT_FORMATS, get_config_with_overrides
 )
-from cognitionflow.orchestration import run_workflow, DEFAULT_TASK_PROMPT
+from cognitionflow.orchestration import run_workflow, get_template_prompt
 
 # Import database functions
 from api.db import save_run, get_run_history, get_metrics as db_get_metrics
@@ -175,33 +175,33 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             })
         
-        args = {
-            "task_prompt": config.task_prompt,
-            "work_dir": work_dir,
-            "on_message": on_message,
-            "model": config.model,
-            "temperature": config.temperature,
-            "anomaly_count": config.anomaly_count, # Passed but may be ignored by generic templates
-            "agent_mode": config.agent_mode,
-            "template_id": config.template_id,
-            "output_format": config.output_format,
-        }
+        task_prompt = config.task_prompt
+        if config.template_id and not task_prompt:
+            task_prompt = get_template_prompt(config.template_id)
         
-        # If using a specific template (and not overridden prompt), we might fetch prompts here
-        # But run_workflow handles template lookups if task_prompt is None
-        if config.template_id and not config.task_prompt:
-            # If the user selected a template but didn't customize the prompt,
-            # we let run_workflow handle fetching the template prompt. 
-            # But we need to pass the template ID if we wanted orchestration to handle it.
-            # However, our updated orchestration.py just takes task_prompt.
-            # So let's fetch it here if needed, or update orchestration to take template_id.
-            # Strategy: Fetch generic prompt here to pass as task_prompt if null.
-            args["task_prompt"] = get_template_prompt(config.template_id)
-            
-        result = run_workflow(**args)
+        result = run_workflow(
+            task_prompt=task_prompt,
+            work_dir=work_dir,
+            on_message=on_message,
+            model=config.model,
+            temperature=config.temperature,
+            anomaly_count=config.anomaly_count,
+            agent_mode=config.agent_mode,
+        )
         
         end_time = datetime.utcnow()
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        
+        # Derive primary report/plot from dynamic artifacts (backward compat)
+        artifacts = result.get("artifacts", [])
+        artifact_report = None
+        artifact_plot = None
+        for a in artifacts:
+            p = a.get("path", "")
+            if p.endswith(".md") and artifact_report is None:
+                artifact_report = p
+            if p.endswith(".png") and artifact_plot is None:
+                artifact_plot = p
         
         # Send completion message
         if q:
@@ -214,8 +214,9 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
         RUNS[run_id] = {
             "status": "completed",
             "work_dir": result["work_dir"],
-            "artifact_report": result["artifact_report"],
-            "artifact_plot": result["artifact_plot"],
+            "artifact_report": artifact_report,
+            "artifact_plot": artifact_plot,
+            "artifacts": artifacts,
             "started_at": start_time.isoformat() + "Z",
             "completed_at": end_time.isoformat() + "Z",
             "duration_ms": duration_ms,
@@ -231,8 +232,8 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
             started_at=start_time.isoformat() + "Z",
             completed_at=end_time.isoformat() + "Z",
             duration_ms=duration_ms,
-            artifact_report=result["artifact_report"],
-            artifact_plot=result["artifact_plot"],
+            artifact_report=artifact_report,
+            artifact_plot=artifact_plot,
         )
         
     except Exception as e:
@@ -311,11 +312,15 @@ def get_config_options():
     return ConfigResponse(
         models=AVAILABLE_MODELS,
         agent_modes=AGENT_MODES,
+        task_templates=TASK_TEMPLATES,
+        output_formats=OUTPUT_FORMATS,
         defaults={
             "model": "llama-3.1-8b-instant",
             "temperature": 0.7,
             "anomaly_count": 5,
             "agent_mode": "standard",
+            "template_id": "data_analysis",
+            "output_format": "markdown",
         }
     )
 
@@ -486,13 +491,31 @@ def get_incident_report(run_id: str):
 
 @app.get("/runs/{run_id}/server_health.png")
 def get_server_health_plot(run_id: str):
-    """Serve server_health.png for a run."""
+    """Serve server_health.png for a run (backward compat)."""
     if run_id not in RUNS or RUNS[run_id].get("status") != "completed":
         raise HTTPException(status_code=404, detail="Run not found or not completed")
     path = RUNS[run_id].get("artifact_plot")
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Artifact not found")
     return FileResponse(path, media_type="image/png")
+
+
+@app.get("/runs/{run_id}/artifacts/{filename:path}")
+def get_run_artifact(run_id: str, filename: str):
+    """Serve any discovered artifact by name (dynamic artifact discovery)."""
+    if run_id not in RUNS or RUNS[run_id].get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Run not found or not completed")
+    artifacts = RUNS[run_id].get("artifacts", [])
+    for a in artifacts:
+        if os.path.basename(a.get("path", "")) == filename or a.get("name") == filename:
+            path = a["path"]
+            if os.path.isfile(path):
+                ext = os.path.splitext(filename)[1].lower()
+                media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                               ".md": "text/markdown", ".json": "application/json", ".txt": "text/plain",
+                               ".html": "text/html", ".csv": "text/csv", ".py": "text/x-python"}
+                return FileResponse(path, media_type=media_types.get(ext, "application/octet-stream"))
+    raise HTTPException(status_code=404, detail="Artifact not found")
 
 
 @app.get("/history")
@@ -1075,17 +1098,36 @@ _INDEX_HTML = """<!DOCTYPE html>
         <div class="config-body" id="configBody">
           <div class="form-group">
             <label>
-              Custom Task Prompt
-              <span class="help-icon" data-tooltip="Define specific scenarios or problems for the agents to solve. Use markdown for structure.">?</span>
+              Task Template
+              <span class="help-icon" data-tooltip="Pre-built task type. Data Analysis, Code Generator, Report, etc. Custom task prompt (below) overrides this.">?</span>
             </label>
-            <textarea id="taskPrompt" placeholder="**Mission:** Your custom analysis task...
-
-**Tasks:**
-1. First task...
-2. Second task...
-
-**Constraints:**
-- Use Polars and Seaborn"></textarea>
+            <select id="templateSelect">
+              <option value="data_analysis" selected>Data Analysis</option>
+              <option value="code_generator">Code Generator</option>
+              <option value="report_generator">Report Generator</option>
+              <option value="web_scraper">Web Scraper</option>
+              <option value="api_builder">API Builder</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>
+              Output Format
+              <span class="help-icon" data-tooltip="Preferred output format. Agent may produce markdown, JSON, code, or plots.">?</span>
+            </label>
+            <select id="outputFormatSelect">
+              <option value="markdown" selected>Markdown</option>
+              <option value="json">JSON</option>
+              <option value="code">Code</option>
+              <option value="plot">Visualization</option>
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>
+              Custom Task Prompt
+              <span class="help-icon" data-tooltip="Optional: override the template with your own instructions. Leave empty to use the selected template.">?</span>
+            </label>
+            <textarea id="taskPrompt" placeholder="Leave empty to use the selected template. Or define your own task in markdown..."></textarea>
           </div>
           
           <div class="form-row">
@@ -1240,6 +1282,8 @@ sequenceDiagram
     const configBody = document.getElementById('configBody');
     const configArrow = document.getElementById('configArrow');
     const taskPrompt = document.getElementById('taskPrompt');
+    const templateSelect = document.getElementById('templateSelect');
+    const outputFormatSelect = document.getElementById('outputFormatSelect');
     const modelSelect = document.getElementById('modelSelect');
     const anomalySelect = document.getElementById('anomalySelect');
     const tempSlider = document.getElementById('tempSlider');
@@ -1247,6 +1291,7 @@ sequenceDiagram
     const agentModeGroup = document.getElementById('agentModeGroup');
     
     let eventSource = null;
+    let configOptions = null;
 
     // Config panel toggle
     configToggle.addEventListener('click', function() {
@@ -1353,9 +1398,26 @@ sequenceDiagram
           
           if (data.status === 'completed') {
             setStatus('Analysis complete!', 'success');
-            links.innerHTML =
-              '<a class="result-link" href="' + base + '/runs/' + runId + '/incident_report" target="_blank">View Incident Report</a>' +
-              '<a class="result-link" href="' + base + '/runs/' + runId + '/server_health.png" target="_blank">View Health Plot</a>';
+            fetch(base + '/runs/' + runId)
+              .then(function(r) { return r.json(); })
+              .then(function(run) {
+                var html = '';
+                if (run.artifacts && run.artifacts.length) {
+                  run.artifacts.forEach(function(a) {
+                    var name = a.name || (a.path && a.path.split(/[/\\\\]/).pop()) || 'file';
+                    html += '<a class="result-link" href="' + base + '/runs/' + runId + '/artifacts/' + encodeURIComponent(name) + '" target="_blank">' + escapeHtml(name) + '</a>';
+                  });
+                } else {
+                  if (run.artifact_report) html += '<a class="result-link" href="' + base + '/runs/' + runId + '/incident_report" target="_blank">View Report</a>';
+                  if (run.artifact_plot) html += '<a class="result-link" href="' + base + '/runs/' + runId + '/server_health.png" target="_blank">View Plot</a>';
+                }
+                if (!html) html = '<span class="result-link">No artifacts</span>';
+                links.innerHTML = html;
+              })
+              .catch(function() {
+                links.innerHTML = '<a class="result-link" href="' + base + '/runs/' + runId + '/incident_report" target="_blank">View Report</a>' +
+                  '<a class="result-link" href="' + base + '/runs/' + runId + '/server_health.png" target="_blank">View Plot</a>';
+              });
             runBtn.disabled = false;
           } else if (data.status === 'failed') {
             setStatus('Analysis failed: ' + (data.error || 'Unknown error'), 'error');
@@ -1385,6 +1447,8 @@ sequenceDiagram
       const selectedMode = agentModeGroup.querySelector('input:checked');
       return {
         task_prompt: taskPrompt.value.trim() || null,
+        template_id: templateSelect.value,
+        output_format: outputFormatSelect.value,
         model: modelSelect.value,
         temperature: parseFloat(tempSlider.value),
         anomaly_count: parseInt(anomalySelect.value),
@@ -1434,6 +1498,32 @@ sequenceDiagram
         modal.classList.remove('active');
       }
     });
+
+    // Load config options (templates, output formats, models) from API
+    fetch(window.location.origin + '/config')
+      .then(function(r) { return r.json(); })
+      .then(function(c) {
+        configOptions = c;
+        if (c.task_templates && c.task_templates.length) {
+          templateSelect.innerHTML = c.task_templates.map(function(t) {
+            return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>';
+          }).join('');
+          if (c.defaults && c.defaults.template_id) templateSelect.value = c.defaults.template_id;
+        }
+        if (c.output_formats && c.output_formats.length) {
+          outputFormatSelect.innerHTML = c.output_formats.map(function(f) {
+            return '<option value="' + escapeHtml(f.id) + '">' + escapeHtml(f.name) + '</option>';
+          }).join('');
+          if (c.defaults && c.defaults.output_format) outputFormatSelect.value = c.defaults.output_format;
+        }
+        if (c.models && c.models.length) {
+          modelSelect.innerHTML = c.models.map(function(m) {
+            return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name) + '</option>';
+          }).join('');
+          if (c.defaults && c.defaults.model) modelSelect.value = c.defaults.model;
+        }
+      })
+      .catch(function() {});
   </script>
 </body>
 </html>
