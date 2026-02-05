@@ -38,10 +38,10 @@ def test_get_config_openai(monkeypatch):
 
 
 def test_get_workspace_dir_default(monkeypatch):
-    """Default workspace is project_workspace."""
+    """Default workspace is /tmp/cognitionflow_workspace (avoids uvicorn reload loops)."""
     monkeypatch.delenv("COGNITIONFLOW_WORKSPACE", raising=False)
     from cognitionflow.config import get_workspace_dir
-    assert get_workspace_dir() == "project_workspace"
+    assert get_workspace_dir() == "/tmp/cognitionflow_workspace"
 
 
 def test_get_workspace_dir_custom(monkeypatch):
