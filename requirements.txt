@@ -1,5 +1,5 @@
 numpy<2.0.0
-pyautogen>=0.2
+qpyautogen==0.2.28
 matplotlib
 seaborn
 polars
