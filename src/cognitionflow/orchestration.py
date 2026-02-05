@@ -78,6 +78,7 @@ def _make_message_dict(sender: str, receiver: str, content: str) -> dict:
     
     return {
         "type": msg_type,
+        "name": sender, # Changed from sender to name for UI
         "sender": sender,
         "receiver": receiver,
         "content": content,
@@ -85,6 +86,7 @@ def _make_message_dict(sender: str, receiver: str, content: str) -> dict:
         "has_code": has_code,
         "code_blocks": code_blocks,
     }
+
 
 
 def _create_message_hook(agent_name: str, other_agent_name: str, on_message: Callable, streamed_messages: list):
@@ -177,9 +179,10 @@ def run_workflow(
             on_message({
                 "type": "phase_change",
                 "phase": "initializing",
-                "message": "Initializing agents...",
+                "message": f"Initializing fresh agent instance (Session: {os.path.basename(work_dir)[:8]})...",
                 "timestamp": datetime.utcnow().isoformat() + "Z",
             })
+
         except Exception:
             pass
 

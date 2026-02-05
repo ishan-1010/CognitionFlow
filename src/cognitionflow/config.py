@@ -53,9 +53,12 @@ def get_config() -> dict:
 
 
 def get_workspace_dir() -> str:
-    """Directory for agent code execution and artifacts."""
+    """Directory for agent code execution and artifacts. Moved to /tmp to avoid uvicorn reload loops."""
     load_env()
-    return os.environ.get("COGNITIONFLOW_WORKSPACE", "project_workspace")
+    # Using /tmp ensures that file writes by the agent don't trigger the uvicorn 'watch' reloader
+    return os.environ.get("COGNITIONFLOW_WORKSPACE", "/tmp/cognitionflow_workspace")
+
+
 
 
 # Available models for user selection
@@ -81,12 +84,18 @@ TASK_TEMPLATES = [
         "prompt": """**Mission:** Perform data analysis on a synthetic dataset.
 
 **Tasks:**
-1. **Data Generation:** Create a sample dataset with 1,000 rows containing realistic business metrics (dates, values, categories).
-2. **Analysis:** Calculate key statistics, identify trends, and detect any anomalies.
+1. **Data Generation:** Create a sample dataset with 1,000 rows containing realistic business metrics (dates, values, categories). **DO NOT use a fixed random seed (like np.random.seed(0))—ensure fresh data every run.**
+2. **Analysis:** Calculate key statistics, identify trends, and detect any anomalies. **PRINTOUT these final statistics to the terminal so they can be verified.**
 3. **Visualization:** Create an informative plot saved as 'analysis_chart.png'.
 4. **Report:** Write findings to 'analysis_report.md' with insights and recommendations.
 
-**Libraries:** Use Polars for data manipulation, Seaborn/Matplotlib for visualization.""",
+
+**Tech Stack Constraints:**
+- USE **PANDAS** for all data manipulation.
+- Use `matplotlib` or `seaborn` for plotting.
+- Do NOT use `mdformat` unless you verify it is installed.
+- **IMPORTANT:** Ensure the code is self-contained and handles different data variations each time it is executed.""",
+
         "output_files": ["analysis_chart.png", "analysis_report.md"],
     },
     {

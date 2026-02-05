@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CognitionFlow | Enterprise Analytics</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+    <!-- inline SVG icons for no external dep -->
+    <style>
+        .icon {
+            width: 16px;
+            height: 16px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <!-- Simple Geometric Logo -->
+                <svg class="brand-icon" viewBox="0 0 24 24">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" fill="none"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <div class="brand-text">CognitionFlow</div>
+            </div>
+
+            <form id="runForm" class="form-section">
+                <!-- Task Template -->
+                <div class="form-group">
+                    <label for="template_id">Analysis Task</label>
+                    <select id="template_id" name="template_id">
+                        <!-- Populated by JS -->
+                    </select>
+                </div>
+
+                <!-- Custom Prompt -->
+                <div class="form-group">
+                    <label for="task_prompt">Context / Instructions (Optional)</label>
+                    <textarea id="task_prompt" name="task_prompt"
+                        placeholder="Provide additional context or specific requirements..."></textarea>
+                </div>
+
+                <!-- Models -->
+                <div class="form-group">
+                    <label for="model">Inference Model</label>
+                    <select id="model" name="model">
+                        <!-- Populated by JS -->
+                    </select>
+                </div>
+
+                <!-- Parameters (Temperature) -->
+                <div class="form-group">
+                    <div style="display: flex; justify-content: space-between;">
+                        <label for="temperature">Creativity</label>
+                        <span id="tempValue" class="mono text-subtle" style="font-size: 0.75rem;">0.7</span>
+                    </div>
+                    <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.1" value="0.7">
+                </div>
+
+                <!-- Advanced Settings Toggle -->
+                <div class="form-group">
+                    <div style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;"
+                        onclick="document.getElementById('advancedOptions').classList.toggle('hidden')">
+                        <label style="cursor: pointer;">Advanced Configuration</label>
+                        <!-- Chevron Down -->
+                        <svg class="icon text-subtle" viewBox="0 0 24 24">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </div>
+
+                    <div id="advancedOptions" class="hidden form-section"
+                        style="padding-top: 1rem; border-left: 2px solid var(--border-subtle); padding-left: 1rem; margin-top: 0.5rem;">
+                        <div class="form-group">
+                            <label for="agent_mode">Verbosity</label>
+                            <select id="agent_mode" name="agent_mode">
+                                <!-- Populated by JS -->
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="output_format">Output Format</label>
+                            <select id="output_format" name="output_format">
+                                <!-- Populated by JS -->
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: auto;"></div>
+
+                <button type="submit" id="runBtn" class="btn-primary">
+                    <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                    </svg>
+                    <span>Execute Pipeline</span>
+                </button>
+            </form>
+
+            <!-- Artifacts List -->
+            <div id="artifactsContainer" class="hidden"
+                style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle);">
+                <label
+                    style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 0.5rem; display: block;">Generated
+                    Artifacts</label>
+                <div id="artifactsList" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+
+            <div style="padding-top: 1rem; border-top: 1px solid var(--border-subtle);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: var(--text-tertiary);">
+                    <span>v2.0.1 PROD</span>
+                    <span style="display: flex; align-items: center; gap: 0.4rem;">
+                        <span style="width: 6px; height: 6px; border-radius: 50%; background: #22c55e;"></span>
+                        System Online
+                    </span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Top Navigation / Status -->
+            <header class="status-bar">
+                <div class="status-item">
+                    <div class="status-dot"></div>
+                    <span id="connectionStatus">System Ready</span>
+                </div>
+                <div style="display: flex; gap: 1.5rem;">
+                    <a href="/history" class="status-item" style="text-decoration: none;">
+                        <svg class="icon" viewBox="0 0 24 24">
+                            <path d="M12 20v-6M6 20V10M18 20V4" />
+                        </svg>
+                        <span>History</span>
+                    </a>
+                    <a href="/metrics" class="status-item" style="text-decoration: none;">
+                        <svg class="icon" viewBox="0 0 24 24">
+                            <line x1="18" y1="20" x2="18" y2="10"></line>
+                            <line x1="12" y1="20" x2="12" y2="4"></line>
+                            <line x1="6" y1="20" x2="6" y2="14"></line>
+                        </svg>
+                        <span>Metrics</span>
+                    </a>
+                </div>
+            </header>
+
+            <!-- Console Output -->
+            <div class="feed-container">
+                <!-- Execution Strategy Widget (Hidden by default) -->
+                <div id="agentPlan" class="strategy-widget hidden">
+                    <div class="strategy-title">Execution Strategy</div>
+                    <div id="agentPlanText"></div>
+                </div>
+
+                <div class="feed-header text-subtle"
+                    style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; margin-left: 0.5rem;">
+                    Terminal Output
+                </div>
+
+                <div id="msgContainer" style="display: flex; flex-direction: column; gap: 1rem; width: 100%;">
+                    <!-- Initial Welcome State -->
+                    <div class="empty-state">
+                        <svg class="icon" style="width: 48px; height: 48px; color: var(--border-active);"
+                            viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                        <p>Configure tasks in the sidebar to initiate analysis.</p>
+                    </div>
+                </div>
+
+                <!-- Anchor element for auto-scroll -->
+                <div id="scrollAnchor"></div>
+            </div>
+
+            <!-- Floating Utilities (e.g. Clear Console) -->
+            <div style="position: absolute; bottom: 1.5rem; right: 2rem;">
+                <button id="clearBtn" class="btn-ghost">Clear Console</button>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>

@@ -88,6 +88,7 @@ def save_run(
         conn.commit()
 
 
+
 def get_run_history(limit: int = 20, offset: int = 0) -> list[dict]:
     """Get recent runs with pagination."""
     with get_db() as conn:
@@ -97,6 +98,17 @@ def get_run_history(limit: int = 20, offset: int = 0) -> list[dict]:
         )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+def get_run_by_id(run_id: str) -> Optional[dict]:
+    """Get a specific run by ID."""
+    with get_db() as conn:
+        cursor = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,))
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+    return None
+
 
 
 def get_metrics() -> dict:
