@@ -3,66 +3,71 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ishan-1010/CognitionFlow/blob/main/CognitionFlow.ipynb)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![AI Framework](https://img.shields.io/badge/Framework-Microsoft_AutoGen-blueviolet)
-![Version](https://img.shields.io/badge/Version-2.0-green)
+![Version](https://img.shields.io/badge/Version-3.0-green)
 
 #### Live Link: https://cognitionflow.onrender.com/
 
-**CognitionFlow** is an applied AI engineering project that explores the design and behavior of **multi-agent systems**. The project demonstrates how multiple AI agents can collaborate and generate analytical artifacts through structured orchestration rather than single-prompt interactions. The agent framework is **generalized**: you can run pre-built task types (data analysis, code generation, reports, etc.) or supply custom prompts; outputs are discovered dynamically.
+**CognitionFlow** is an applied AI engineering project that demonstrates a **three-agent system with a review loop**. An Executor, Engineer, and Reviewer collaborate via GroupChat — the Engineer writes code, the Executor runs it, and the Reviewer validates the output before approving. If the Reviewer finds issues, it sends feedback back to the Engineer for another iteration. This produces verified, high-quality artifacts.
 
-This repository serves as a **systems-level prototype**, focusing on architecture, reasoning flow, and agent coordination using **Microsoft AutoGen**.
-
----
-
-## 🆕 What's New in v2.0
-
-- **Generalized Agent Framework**: Pre-built task templates (Data Analysis, Code Generator, Report Generator, Web Scraper, API Builder) — not limited to server-spike analysis
-- **User Customization**: Task template + output format selection, optional custom prompts, LLM models, temperature, anomaly patterns, and agent verbosity
-- **Dynamic Artifact Discovery**: Runs discover and expose all generated files (reports, plots, code, JSON) via `/runs/{id}/artifacts/{filename}`
-- **Memory Optimization**: Concurrent run limiter, automatic workspace cleanup, optimized for Render free tier (512MB)
-- **Production Features**: Rate limiting, SQLite run history, /metrics endpoint
-- **Enhanced UI**: Template selector, output format selector, dynamic result links, collapsible advanced options with tooltips
+The framework is **generalized**: choose from pre-built task templates (data analysis, code generation, reports, etc.) or supply custom prompts. Outputs are discovered dynamically.
 
 ---
 
-## Generated Artifacts & Analysis
+## What's New in v3.0
 
-Unlike standard chatbots, this system generates tangible outputs. Below is an example of the system health analysis generated autonomously by the *Analyst Agent* after interpreting synthetic log data:
-
-![System Health Plot](server_health.png)
-*(Figure: Multi-agent generated analysis of system metrics)*
+- **Three-Agent Review Loop**: Engineer writes code → Executor runs it → Reviewer validates → iterates until quality passes
+- **GroupChat Orchestration**: Deterministic speaker selection with `autogen.GroupChat` for structured multi-turn collaboration
+- **Generalized Task Templates**: Data Analysis, Code Generator, Report Generator, Web Scraper, API Builder
+- **Dynamic Artifact Discovery**: All generated files exposed via `/runs/{id}/artifacts/{filename}`
+- **Improved Prompts**: Engineer forbidden from self-terminating; Reviewer controls pipeline completion
+- **Clean Architecture**: Dead code removed (memory.py, anomaly_count), dependencies synced, frontend separated
 
 ---
 
-## Project Overview
+## How It Works
 
-Modern LLM applications often rely on single-agent prompt chains, which limit scalability and collaborative reasoning. This project investigates an **agent orchestration** approach where:
+```
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Executor   │────▶│   Engineer   │────▶│   Reviewer   │
+│ (runs code)  │◀────│ (writes code)│◀────│ (validates)  │
+└─────────────┘     └──────────────┘     └──────────────┘
+       │                                        │
+       │         Review Loop (GroupChat)         │
+       │◀───────────────────────────────────────│
+       │     If issues: back to Engineer         │
+       │     If approved: PIPELINE_COMPLETE      │
+```
 
-* **Distinct Roles:** Agents assume specialized personas (e.g., *Coordinator, Executor, Analyst*).
-* **Autonomous Loops:** Agents collaborate to simulate problem-solving workflows without human intervention.
-* **Artifact Generation:** Outputs include both reasoning traces and generated files (plots, reports).
-* **User Customization:** Configurable prompts, models, and analysis parameters.
+1. **Executor** sends the task prompt to the GroupChat
+2. **Engineer** writes complete Python code in a single block
+3. **Executor** runs the code and reports output (exitcode, stdout)
+4. **Reviewer** evaluates: execution success, artifact quality, constraint compliance
+5. If issues found → back to **Engineer** with specific feedback
+6. If all checks pass → **Reviewer** says `PIPELINE_COMPLETE`
+
+---
 
 ## Key Features
 
 | Feature | Description |
 |---------|-------------|
-| **Generalized Agent Framework** | Task-agnostic system prompts; pre-built templates and dynamic artifact discovery |
-| **Multi-Agent Architecture** | Explicit role assignment using the AutoGen framework |
-| **Task Templates & Output Formats** | Choose task type and preferred output (markdown, JSON, code, plot, auto) |
-| **Customizable Analysis** | Configure template, custom prompts, models, temperature, anomaly patterns with UI tooltips |
+| **Three-Agent Review Loop** | Engineer → Executor → Reviewer with iterative quality gates |
+| **GroupChat Orchestration** | Deterministic speaker selection via `autogen.GroupChat` |
+| **Task Templates** | 5 pre-built task types; custom prompts supported |
+| **Dynamic Artifacts** | All generated files discovered and served by name |
+| **Real-time Streaming** | Server-Sent Events for live agent conversation |
 | **Memory Optimized** | Concurrent run limiter (2 max), workspace cleanup, Agg backend |
 | **Production Ready** | Rate limiting (10 req/min), SQLite history, /metrics endpoint |
-| **Real-time Streaming** | Server-Sent Events for live agent conversation |
 
 ---
 
 ## Technologies Used
 
 * **Core:** Python 3.10+, FastAPI, SQLite
-* **Orchestration:** Microsoft AutoGen
+* **Orchestration:** Microsoft AutoGen (GroupChat, UserProxy, AssistantAgent)
 * **Inference:** Groq LPU (Llama 3.3, Llama 3.1, Qwen, GPT-OSS)
-* **Data/Viz:** Polars, Seaborn, Matplotlib
-* **Deployment:** Docker, Render-optimized
+* **Data/Viz:** Pandas, Polars, Seaborn, Matplotlib
+* **Deployment:** Docker, Render-optimized (512MB)
 
 ---
 
@@ -71,13 +76,11 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Web UI with template selector and customization panel |
-| `/config` | GET | Available models, modes, task templates, output formats, defaults |
-| `/run` | POST | Start analysis with optional config |
+| `/config` | GET | Available models, modes, task templates, output formats |
+| `/run` | POST | Start pipeline with optional config |
 | `/runs/{id}` | GET | Run status and discovered artifacts list |
-| `/runs/{id}/stream` | GET | SSE real-time messages |
-| `/runs/{id}/artifacts/{filename}` | GET | Serve any discovered artifact by name |
-| `/runs/{id}/incident_report` | GET | Primary report file (backward compat) |
-| `/runs/{id}/server_health.png` | GET | Primary plot (backward compat) |
+| `/runs/{id}/stream` | GET | SSE real-time agent messages |
+| `/runs/{id}/artifacts/{filename}` | GET | Serve any artifact by name |
 | `/history` | GET | Run history (paginated) |
 | `/metrics` | GET | Success rates, avg duration |
 | `/health` | GET | Liveness check |
@@ -91,7 +94,6 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
   "output_format": "markdown",
   "model": "llama-3.1-8b-instant",
   "temperature": 0.7,
-  "anomaly_count": 5,
   "agent_mode": "standard"
 }
 ```
@@ -103,10 +105,54 @@ Modern LLM applications often rely on single-agent prompt chains, which limit sc
 
 ---
 
+## Architecture
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant FastAPI
+    participant Exec as Executor
+    participant Eng as Engineer
+    participant Rev as Reviewer
+    participant LLM as Groq LLM
+
+    Browser->>FastAPI: POST /run {config}
+    FastAPI-->>Browser: run_id
+    Browser->>FastAPI: GET /runs/{id}/stream (SSE)
+
+    FastAPI->>Exec: initiate_chat(manager)
+    Exec->>Eng: Task prompt (via GroupChat)
+    FastAPI-->>Browser: SSE: Executor message
+
+    Eng->>LLM: Generate code
+    LLM-->>Eng: Python code
+    FastAPI-->>Browser: SSE: Engineer message
+
+    Eng->>Exec: Code block
+    Exec->>Exec: Execute code
+    FastAPI-->>Browser: SSE: Code output
+
+    Exec->>Rev: Execution results
+    Rev->>Rev: Evaluate quality
+
+    alt Issues Found
+        Rev->>Eng: Feedback (fix issues)
+        Eng->>Exec: Updated code
+        Exec->>Exec: Re-execute
+        Exec->>Rev: New results
+    end
+
+    Rev->>Rev: All checks pass
+    Rev-->>FastAPI: PIPELINE_COMPLETE
+    FastAPI-->>Browser: SSE: Complete
+```
+
+---
+
 ## How to Run
 
 ### Option 1: Run in Cloud (Recommended)
-Click the badge above to open the notebook directly in Google Colab. You will need your own API keys.
+Click the badge above to open the notebook in Google Colab. You will need your own API keys.
 
 ### Option 2: Run Locally
 
@@ -153,35 +199,6 @@ docker run -p 8000:8000 -e GROQ_API_KEY=your_key cognitionflow
 Set `GROQ_API_KEY` in environment; run `uvicorn api.main:app --host 0.0.0.0 --port $PORT`.
 
 **Memory optimized for Render free tier (512MB).**
-
----
-
-## Architecture
-
-```mermaid
-sequenceDiagram
-    participant Browser
-    participant FastAPI
-    participant PM as Product_Manager
-    participant Eng as Senior_Engineer
-    participant LLM as Groq LLM
-    
-    Browser->>FastAPI: POST /run {config}
-    FastAPI-->>Browser: run_id
-    Browser->>FastAPI: GET /runs/{id}/stream (SSE)
-    
-    FastAPI->>PM: initiate_chat()
-    PM->>Eng: Task prompt
-    FastAPI-->>Browser: SSE: PM message
-    
-    Eng->>LLM: Generate code
-    LLM-->>Eng: Python code
-    FastAPI-->>Browser: SSE: Engineer message
-    
-    PM->>PM: Execute code
-    Eng->>PM: TERMINATE
-    FastAPI-->>Browser: SSE: Complete
-```
 
 ---
 

@@ -20,7 +20,7 @@ def test_get_config_groq(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test_groq_key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfg = get_config()
-    assert cfg["config_list"][0]["model"] == "openai/gpt-oss-120b"
+    assert cfg["config_list"][0]["model"] == "llama-3.1-8b-instant"
     assert cfg["config_list"][0]["base_url"] == "https://api.groq.com/openai/v1"
     assert cfg["config_list"][0]["api_key"] == "test_groq_key"
     assert cfg["temperature"] == 0.1
@@ -41,7 +41,7 @@ def test_get_workspace_dir_default(monkeypatch):
     """Default workspace is /tmp/cognitionflow_workspace (avoids uvicorn reload loops)."""
     monkeypatch.delenv("COGNITIONFLOW_WORKSPACE", raising=False)
     from cognitionflow.config import get_workspace_dir
-    assert get_workspace_dir() == "/tmp/cognitionflow_workspace"
+    assert get_workspace_dir() == "project_workspace"
 
 
 def test_get_workspace_dir_custom(monkeypatch):

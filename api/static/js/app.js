@@ -132,7 +132,6 @@ document.addEventListener('DOMContentLoaded', () => {
             temperature: parseFloat(formData.get('temperature')),
             agent_mode: formData.get('agent_mode'),
             output_format: formData.get('output_format'),
-            anomaly_count: 5
         };
 
         try {
@@ -202,18 +201,28 @@ document.addEventListener('DOMContentLoaded', () => {
             roleClass = 'system';
             contentHtml = `<p><strong>PHASE: ${msg.phase.toUpperCase()}</strong> &mdash; ${msg.message}</p>`;
         } else if (msg.name) {
-            role = msg.name.replace('_', ' '); // Replace underscores in agent names
+            role = msg.name.replace('_', ' ');
             contentHtml = marked.parse(msg.content || '');
         } else {
             contentHtml = `<pre>${JSON.stringify(msg, null, 2)}</pre>`;
         }
 
+        // Role-based badge styling
+        let badgeClass = 'role-badge';
+        if (role === 'Engineer') badgeClass += ' role-engineer';
+        else if (role === 'Reviewer') badgeClass += ' role-reviewer';
+        else if (role === 'Executor') badgeClass += ' role-executor';
+
+        // Special card styling for approved reviews
+        let cardClass = `message-card ${roleClass} prose`;
+        if (msg.type === 'review_approved') cardClass += ' approved';
+
         div.innerHTML = `
             <div class="message-header">
-                <span class="role-badge">${role}</span>
+                <span class="${badgeClass}">${role}</span>
                 <span class="timestamp">${new Date().toLocaleTimeString()}</span>
             </div>
-            <div class="message-card ${roleClass} prose">
+            <div class="${cardClass}">
                 ${contentHtml}
             </div>
         `;

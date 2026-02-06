@@ -6,12 +6,15 @@ Enhanced with user customization, memory optimization, and production features.
 import matplotlib
 matplotlib.use('Agg')
 
+import gc
 import os
 import uuid
 import json
 import queue
 import asyncio
 import shutil
+import resource
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -41,11 +44,42 @@ from cognitionflow.orchestration import run_workflow, get_template_prompt
 # Import database functions
 from api.db import save_run, get_run_history, get_metrics as db_get_metrics, get_run_by_id
 
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Memory Cap: 500 MB
+# ============================================================================
+MEMORY_CAP_MB = int(os.environ.get("COGNITIONFLOW_MEM_CAP_MB", "500"))
+MEMORY_CAP_BYTES = MEMORY_CAP_MB * 1024 * 1024
+
+def _apply_memory_cap():
+    """Apply OS-level memory limits where possible."""
+    try:
+        # RLIMIT_RSS is not effective on all platforms; RLIMIT_AS caps virtual memory
+        # On macOS RLIMIT_RSS exists but is advisory; on Linux it's effective.
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard == resource.RLIM_INFINITY or hard > MEMORY_CAP_BYTES:
+            resource.setrlimit(resource.RLIMIT_AS, (MEMORY_CAP_BYTES, MEMORY_CAP_BYTES))
+            logger.info("Memory cap set to %d MB (RLIMIT_AS)", MEMORY_CAP_MB)
+    except (ValueError, OSError) as e:
+        # macOS may refuse to set this; that's fine — we still enforce at app level
+        logger.debug("Could not set RLIMIT_AS: %s (will rely on app-level limits)", e)
+
+def _get_process_memory_mb() -> float:
+    """Return current RSS of the process in MB."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    # ru_maxrss is in KB on Linux, bytes on macOS
+    if sys.platform == "darwin":
+        return usage.ru_maxrss / (1024 * 1024)
+    return usage.ru_maxrss / 1024
+
+# Apply on import
+_apply_memory_cap()
 
 # ============================================================================
 # Memory Optimization: Concurrent Run Limiter
 # ============================================================================
-MAX_CONCURRENT_RUNS = 2
+MAX_CONCURRENT_RUNS = 1  # Strict: one run at a time to stay under 500 MB
 run_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
 
 # Store run state and message queues for SSE streaming
@@ -118,19 +152,17 @@ class RunConfig(BaseModel):
     task_prompt: Optional[str] = Field(None, description="Custom task prompt or overridden template prompt")
     template_id: str = Field("data_analysis", description="ID of the task template to use")
     output_format: str = Field("markdown", description="Desired output format (markdown, json, code, plot, auto)")
-    
+
     model: str = Field(
         "llama-3.1-8b-instant",
         description="LLM model to use"
     )
     temperature: float = Field(
-        0.7, 
-        ge=0.0, 
-        le=1.0, 
+        0.7,
+        ge=0.0,
+        le=1.0,
         description="LLM temperature (0.0 = deterministic, 1.0 = creative)"
     )
-    # Keeping anomaly_count for backward compatibility with old 'data_analysis' template
-    anomaly_count: int = Field(5, ge=1, le=10, description="Number of items/anomalies (if applicable)")
     agent_mode: str = Field("standard", description="Agent verbosity: standard, detailed, or concise")
 
 
@@ -186,7 +218,6 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
             on_message=on_message,
             model=config.model,
             temperature=config.temperature,
-            anomaly_count=config.anomaly_count,
             agent_mode=config.agent_mode,
         )
         
@@ -238,30 +269,71 @@ def _run_sync(work_dir: str, run_id: str, config: RunConfig) -> None:
         )
         
     except Exception as e:
-        if q:
-            q.put({
-                "type": "done",
+        logger.warning("Run %s error: %s", run_id, e)
+        end_time = datetime.utcnow()
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+        # Graceful degradation: check if artifacts were generated despite error
+        from cognitionflow.orchestration import discover_artifacts
+        artifacts = discover_artifacts(work_dir) if os.path.isdir(work_dir) else []
+
+        if artifacts:
+            # Artifacts exist → mark as completed with warning
+            artifact_report = next((a["path"] for a in artifacts if a["path"].endswith(".md")), None)
+            artifact_plot = next((a["path"] for a in artifacts if a["path"].endswith(".png")), None)
+
+            if q:
+                q.put({
+                    "type": "done",
+                    "status": "completed",
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                })
+
+            RUNS[run_id] = {
+                "status": "completed",
+                "work_dir": work_dir,
+                "artifact_report": artifact_report,
+                "artifact_plot": artifact_plot,
+                "artifacts": artifacts,
+                "started_at": start_time.isoformat() + "Z",
+                "completed_at": end_time.isoformat() + "Z",
+                "duration_ms": duration_ms,
+                "warning": str(e),
+                "config": config.model_dump(),
+            }
+            save_run(
+                run_id=run_id, status="completed", config=config.model_dump(),
+                started_at=start_time.isoformat() + "Z",
+                completed_at=end_time.isoformat() + "Z",
+                duration_ms=duration_ms,
+                artifact_report=artifact_report, artifact_plot=artifact_plot,
+            )
+        else:
+            # No artifacts → true failure
+            if q:
+                q.put({
+                    "type": "done",
+                    "status": "failed",
+                    "error": str(e),
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                })
+
+            RUNS[run_id] = {
                 "status": "failed",
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            })
-        
-        RUNS[run_id] = {
-            "status": "failed",
-            "error": str(e),
-            "started_at": start_time.isoformat() + "Z",
-            "failed_at": datetime.utcnow().isoformat() + "Z",
-            "config": config.model_dump(),
-        }
-        
-        # Save failure to database
-        save_run(
-            run_id=run_id,
-            status="failed",
-            config=config.model_dump(),
-            started_at=start_time.isoformat() + "Z",
-            error=str(e),
-        )
+                "started_at": start_time.isoformat() + "Z",
+                "failed_at": end_time.isoformat() + "Z",
+                "config": config.model_dump(),
+            }
+            save_run(
+                run_id=run_id, status="failed", config=config.model_dump(),
+                started_at=start_time.isoformat() + "Z", error=str(e),
+            )
+    finally:
+        # Aggressive memory cleanup after every run
+        gc.collect()
+        mem_mb = _get_process_memory_mb()
+        logger.info("Run %s finished — memory: %.0f MB / %d MB cap", run_id, mem_mb, MEMORY_CAP_MB)
 
 
 # ============================================================================
@@ -278,8 +350,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CognitionFlow API",
-    description="Multi-agent RCA pipeline with user customization. Trigger analysis and retrieve artifacts.",
-    version="2.0.0",
+    description="Multi-agent pipeline with review loop. Three agents collaborate to produce verified artifacts.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -305,8 +377,14 @@ def index():
 
 @app.get("/health")
 def health():
-    """Liveness check."""
-    return {"status": "ok", "concurrent_limit": MAX_CONCURRENT_RUNS}
+    """Liveness check with memory stats."""
+    mem_mb = _get_process_memory_mb()
+    return {
+        "status": "ok",
+        "concurrent_limit": MAX_CONCURRENT_RUNS,
+        "memory_mb": round(mem_mb, 1),
+        "memory_cap_mb": MEMORY_CAP_MB,
+    }
 
 
 @app.get("/config", response_model=ConfigResponse)
@@ -320,7 +398,6 @@ def get_config_options():
         defaults={
             "model": "llama-3.1-8b-instant",
             "temperature": 0.7,
-            "anomaly_count": 5,
             "agent_mode": "standard",
             "template_id": "data_analysis",
             "output_format": "markdown",
@@ -450,15 +527,26 @@ async def stream_run(run_id: str):
 
         raise HTTPException(status_code=404, detail="Run queue not found")
     
+    def _blocking_get(q, timeout):
+        """Wrapper so we can call q.get in a thread executor."""
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     async def event_generator():
+        loop = asyncio.get_event_loop()
         try:
             while True:
                 try:
-                    # Get message with timeout to allow checking if run is done
-                    try:
-                        msg = q.get(timeout=1.0)
-                    except queue.Empty:
-                        # Check if run is complete
+                    # Non-blocking queue read: run the blocking q.get in a
+                    # thread so the event-loop stays free to flush SSE chunks.
+                    msg = await loop.run_in_executor(
+                        None, _blocking_get, q, 1.0
+                    )
+
+                    if msg is None:
+                        # Timeout — check if run finished while we waited
                         run_state = RUNS.get(run_id, {})
                         if run_state.get("status") in ("completed", "failed"):
                             yield {
@@ -471,14 +559,14 @@ async def stream_run(run_id: str):
                             }
                             break
                         continue
-                    
+
                     if msg.get("type") == "done":
                         yield {
                             "event": "done",
                             "data": json.dumps(msg)
                         }
                         break
-                    
+
                     yield {
                         "event": "message",
                         "data": json.dumps(msg)

@@ -1,7 +1,7 @@
 [project]
 name = "cognitionflow"
-version = "0.2.0"
-description = "Multi-agent RCA pipeline powered by AutoGen - lightweight deployment"
+version = "3.0.0"
+description = "Multi-agent pipeline with review loop — Executor, Engineer, Reviewer"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,9 +11,12 @@ dependencies = [
     "seaborn",
     "polars",
     "pandas",
+    "pyarrow",
     "python-dotenv>=1.0.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.22.0",
+    "sse-starlette>=1.6.0",
+    "scipy",
 ]
 
 [project.optional-dependencies]
