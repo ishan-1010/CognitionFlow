@@ -47,34 +47,26 @@ from api.db import save_run, get_run_history, get_metrics as db_get_metrics, get
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Memory Cap: 500 MB
+# Memory Cap: 500 MB (app-level enforcement)
 # ============================================================================
+# NOTE: We do NOT use resource.setrlimit(RLIMIT_AS) because RLIMIT_AS caps
+# *virtual* address space, not physical RAM.  Python + numpy + pydantic alone
+# map ~1-2 GB of virtual memory at import time while only using ~150 MB RSS.
+# Setting RLIMIT_AS to 500 MB causes MemoryError during pydantic import.
+# Instead we enforce the cap at the application level: single concurrent run,
+# gc.collect() after every run, and a pre-run memory check.
 MEMORY_CAP_MB = int(os.environ.get("COGNITIONFLOW_MEM_CAP_MB", "500"))
-MEMORY_CAP_BYTES = MEMORY_CAP_MB * 1024 * 1024
-
-def _apply_memory_cap():
-    """Apply OS-level memory limits where possible."""
-    try:
-        # RLIMIT_RSS is not effective on all platforms; RLIMIT_AS caps virtual memory
-        # On macOS RLIMIT_RSS exists but is advisory; on Linux it's effective.
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        if hard == resource.RLIM_INFINITY or hard > MEMORY_CAP_BYTES:
-            resource.setrlimit(resource.RLIMIT_AS, (MEMORY_CAP_BYTES, MEMORY_CAP_BYTES))
-            logger.info("Memory cap set to %d MB (RLIMIT_AS)", MEMORY_CAP_MB)
-    except (ValueError, OSError) as e:
-        # macOS may refuse to set this; that's fine — we still enforce at app level
-        logger.debug("Could not set RLIMIT_AS: %s (will rely on app-level limits)", e)
 
 def _get_process_memory_mb() -> float:
-    """Return current RSS of the process in MB."""
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    # ru_maxrss is in KB on Linux, bytes on macOS
-    if sys.platform == "darwin":
-        return usage.ru_maxrss / (1024 * 1024)
-    return usage.ru_maxrss / 1024
-
-# Apply on import
-_apply_memory_cap()
+    """Return current peak RSS of the process in MB."""
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # ru_maxrss is in KB on Linux, bytes on macOS
+        if sys.platform == "darwin":
+            return usage.ru_maxrss / (1024 * 1024)
+        return usage.ru_maxrss / 1024
+    except Exception:
+        return 0.0
 
 # ============================================================================
 # Memory Optimization: Concurrent Run Limiter
@@ -423,6 +415,17 @@ async def run_analysis(
             detail=f"Rate limit exceeded. Max {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW}s."
         )
     
+    # Memory guard: reject if approaching the cap
+    current_mem = _get_process_memory_mb()
+    if current_mem > MEMORY_CAP_MB * 0.85:
+        gc.collect()  # try to reclaim first
+        current_mem = _get_process_memory_mb()
+        if current_mem > MEMORY_CAP_MB * 0.85:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Memory pressure: {current_mem:.0f} MB / {MEMORY_CAP_MB} MB cap. Try again shortly."
+            )
+
     # Check concurrent run limit
     if run_semaphore.locked():
         active_count = MAX_CONCURRENT_RUNS - run_semaphore._value
